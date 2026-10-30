@@ -3,6 +3,7 @@
 //! This module never starts an interactive chat. Help probes are bounded and a
 //! launch plan must still be accepted by the panel before the host opens a tab.
 
+use crate::text::plain_path;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -312,26 +313,6 @@ fn label(id: &str) -> &str {
         .find(|&&(candidate, _)| candidate == id)
         .map(|&(_, label)| label)
         .unwrap_or(id)
-}
-
-/// Undo the Windows verbatim prefix `fs::canonicalize` adds (`\\?\C:\...`,
-/// `\\?\UNC\server\share`). Harness CLIs and the shells that start them treat
-/// `?` as a literal filename character, so a verbatim cwd breaks their
-/// per-project state. OMP derives its session directory from the cwd and fails
-/// with ENOENT because `?` is not a legal Windows filename character. Keep the
-/// canonical spelling, drop the prefix.
-fn plain_path(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy();
-        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
-        }
-    }
-    path
 }
 
 fn readable_directory(path: &str) -> Result<PathBuf> {

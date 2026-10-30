@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// Clean user-facing text: remove system-reminder blocks and drop records that
 /// are internal tooling noise. Returns None when the result is empty or noisy.
 pub fn clean_user(s: &str) -> Option<String> {
@@ -173,6 +175,25 @@ fn days_from_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
     Some(days)
 }
 
+/// Undo the Windows verbatim prefix `std::fs::canonicalize` adds (`\\?\C:\...`,
+/// `\\?\UNC\server\share`). Harnesses, shells and the project library treat `?`
+/// as a literal character, so a verbatim spelling breaks per-project state
+/// (OMP keys its session directory on the cwd and fails with ENOENT). Keep the
+/// canonical spelling, drop the prefix.
+pub fn plain_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +262,19 @@ mod tests {
     #[test]
     fn one_line_collapses() {
         assert_eq!(one_line("  foo   bar  ", 100), "foo bar");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_path_strips_verbatim_prefix() {
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\D:\Users\charm\x")),
+            PathBuf::from(r"D:\Users\charm\x")
+        );
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\UNC\server\share\x")),
+            PathBuf::from(r"\\server\share\x")
+        );
+        assert_eq!(plain_path(PathBuf::from(r"D:\already\plain")), PathBuf::from(r"D:\already\plain"));
     }
 }

@@ -8,6 +8,11 @@ All notable changes to `tern-projects` will be documented in this file.
 - **Projects commands and New chat on Tern 0.9.5**: `Projects`, `Projects: Search` and `Projects: Settings` now open the panel, and **New chat** opens its tab. Tern 0.9.5's `cx.session:pane(id)` and `cx.layout:split(id, …)` can return nil for a live pane id, so the window now looks panes up through `cx.session:panes()` and opens the panel with `cx:new_block(…, "split")` when `split` finds no target.
 - Thanks to [Florian Séran (@flosrn)](https://github.com/flosrn) for this fix, imported from [commit `abcdcdf`](https://github.com/flosrn/tern-projects/commit/abcdcdfc87f85868d38835e5d7fbaa0fb7b3648e).
 
+## [0.2.5] — 2026-10-30
+
+### Fixed
+- **Project folder storage**: saved project folders and the folder browser now record the plain spelling instead of the `\\?\` verbatim path. Existing rows keep working (launch normalizes them) and are rewritten the next time the project is saved.
+
 ## [0.2.4] — 2026-10-30
 
 ### Fixed

@@ -1,4 +1,5 @@
 use crate::model::Assignment;
+use crate::text::plain_path;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -492,6 +493,7 @@ pub fn readable_dir(path: &Path) -> Result<PathBuf> {
     );
     std::fs::read_dir(path).with_context(|| format!("cannot read directory {}", path.display()))?;
     std::fs::canonicalize(path)
+        .map(plain_path)
         .with_context(|| format!("cannot resolve directory {}", path.display()))
 }
 pub fn folders(value: &str, cwd: &str, home: &Path, offset: i64, limit: i64) -> Result<Value> {
