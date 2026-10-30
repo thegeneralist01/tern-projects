@@ -314,8 +314,28 @@ fn label(id: &str) -> &str {
         .unwrap_or(id)
 }
 
+/// Undo the Windows verbatim prefix `fs::canonicalize` adds (`\\?\C:\...`,
+/// `\\?\UNC\server\share`). Harness CLIs and the shells that start them treat
+/// `?` as a literal filename character, so a verbatim cwd breaks their
+/// per-project state. OMP derives its session directory from the cwd and fails
+/// with ENOENT because `?` is not a legal Windows filename character. Keep the
+/// canonical spelling, drop the prefix.
+fn plain_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 fn readable_directory(path: &str) -> Result<PathBuf> {
-    let path = fs::canonicalize(path)?;
+    let path = plain_path(fs::canonicalize(path)?);
     if !path.is_dir() {
         bail!("not a directory");
     }
@@ -460,7 +480,7 @@ fn omp_overlay(db_path: &Path) -> Result<String> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(parent).context("Cannot create plugin data directory")?;
-    let path = fs::canonicalize(parent)?.join("omp-new.yml");
+    let path = plain_path(fs::canonicalize(parent)?).join("omp-new.yml");
     safe_text(path_text(&path)?, "OMP overlay path")?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
