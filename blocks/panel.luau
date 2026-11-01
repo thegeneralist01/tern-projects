@@ -113,15 +113,86 @@ end
 
 local reload: (any) -> ()
 local action: (any, string, string?) -> ()
-local function cancel_flow(s: any)
+local end_launch_wait: (any) -> ()
+local cancel_flow: (any) -> ()
+
+-- Launch waiting: New chat reports a stage and a deadline instead of going quiet ------
+local LAUNCH_TIMEOUT = {["launch-plan"] = 15000, harnesses = 65000}
+
+end_launch_wait = function(s: any)
+	for _, timer in s.launch_timers or {} do pcall(function() timer:cancel() end) end
+	s.launch_timers = nil
+	s.launch_wait_seq = (s.launch_wait_seq or 0) + 1
+	s.launch_pending = false
+	s.launch_slow = false
+	s.launch_phase = nil
+	-- The picker's subtitle is the only line a loading sheet shows.
+	local p = s.launch_picker
+	if p and p.subtitle_backup then p.subtitle = p.subtitle_backup; p.subtitle_backup = nil end
+	s.launch_picker = nil
+end
+
+cancel_flow = function(s: any)
 	s.flow = (s.flow or 0) + 1
 	s.picker = nil; s.menu = nil; s.confirm = nil; s.pending_plan = nil
+	end_launch_wait(s)
 end
+
+-- A picker names its own stage; the panel banner names the launch itself.
+local function wait_text(s: any, in_picker: boolean): string
+	if s.launch_slow then return "Still preparing. You can cancel and retry." end
+	if not in_picker then return "Preparing new chat…" end
+	return if s.launch_phase == "harnesses" then "Checking installed tools…" else "Preparing launch…"
+end
+
+local function launch_timeout_text(): string
+	return if cli.status() then "The backend is still building. Retry when the build finishes." else "Preparing new chat timed out. Retry or choose another tool."
+end
+
+local function begin_launch_wait(s: any, phase: string)
+	end_launch_wait(s)
+	local seq = s.launch_wait_seq
+	s.launch_pending = true
+	s.launch_slow = false
+	s.launch_phase = phase
+	-- A new attempt supersedes the banner of the last one.
+	s.error = nil; s.error_reload = false
+	if s.picker then
+		s.launch_picker = s.picker
+		s.picker.subtitle_backup = s.picker.subtitle
+		s.picker.subtitle = wait_text(s, true)
+	end
+	local function current(): boolean return live(s) and s.launch_pending and s.launch_wait_seq == seq end
+	s.launch_timers = {
+		tern.timer(5000, function()
+			if not current() then return end
+			s.launch_slow = true
+			if s.picker then s.picker.subtitle = wait_text(s, true) end
+			s.cx:render()
+		end),
+		tern.timer(LAUNCH_TIMEOUT[phase], function()
+			if not current() then return end
+			local p = s.picker
+			local text = launch_timeout_text()
+			cancel_flow(s)
+			-- A picker stays open on the failure, so another tool remains reachable.
+			if p then p.state = "error"; p.message = text; s.picker = p; picker.settle(p)
+			else s.error = text; s.error_reload = false end
+			toast(s, "error", "Couldn't prepare new chat", text)
+			s.cx:render()
+		end),
+	}
+	s.cx:render()
+end
+
 local function request(s: any, payload: any, cb: (any) -> (), channel: string?, on_err: ((string) -> ())?)
 	local key = channel or "request"
 	s.tokens[key] = (s.tokens[key] or 0) + 1
 	local token = s.tokens[key]
 	local mode, flow = s.mode, s.flow or 0
+	local function current(): boolean
+		return live(s) and s.tokens[key] == token and s.mode == mode and (s.flow or 0) == flow
+	end
 	cli.request(payload, function(data, err)
 		if not live(s) or s.tokens[key] ~= token then return end
 		if key ~= "mutation" and (s.mode ~= mode or (s.flow or 0) ~= flow) then s.cx:render(); return end
@@ -130,7 +201,7 @@ local function request(s: any, payload: any, cb: (any) -> (), channel: string?, 
 			if on_err then on_err(err) else s.error = err; s.error_reload = false end
 		else cb(data) end
 		s.cx:render()
-	end)
+	end, if key == "launch" or key == "harnesses" then current else nil)
 end
 local function mutate(s: any, payload: any, done: ((any) -> ())?, on_err: ((string) -> ())?)
 	if s.busy then return end
@@ -318,7 +389,7 @@ local function browser_query(s: any)
 		if live(s) and s.editor == d and d.browser == b and b.gen == gen then browse(s, dir, {filter = base}) end
 	end)
 end
-local launch_plan: (any, string) -> ()
+local launch_plan: (any, string, boolean) -> ()
 local harness_picker: (any, string) -> ()
 local start_launch: (any, boolean) -> ()
 local function browser_intent(s: any, intent: string?, value: string?)
@@ -468,8 +539,10 @@ harness_picker = function(s: any, purpose: string)
 	})
 	local p = s.picker
 	if not is_default and s.default_unavailable then p.subtitle = s.default_unavailable end
+	if not is_default then begin_launch_wait(s, "harnesses") end
 	request(s, {op = "harnesses"}, function(data)
 		if s.picker ~= p then return end
+		end_launch_wait(s)
 		local items = {}
 		if is_default then table.insert(items, {id = "ask", label = "Ask every time", detail = "Choose a harness for each new chat", icon = "help"}) end
 		local folders = s.launch_target and s.launch_target.folders or 1
@@ -489,9 +562,22 @@ harness_picker = function(s: any, purpose: string)
 			})
 		end
 		p.items = items; p.state = "ready"
-		p.selected = if is_default then (if type(default) == "string" then default else "ask") elseif type(default) == "string" then default else nil
+		if is_default then
+			p.selected = if type(default) == "string" then default else "ask"
+		else
+			-- A missing or unavailable default must not stay selected; settle picks the first usable tool.
+			p.selected = nil
+			if type(default) == "string" then
+				for _, it in items do if it.id == default and not it.disabled then p.selected = default end end
+			end
+		end
 		picker.settle(p)
-	end, "harnesses", function(err) if s.picker == p then p.state = "error"; p.message = fmt.error(err) end end)
+	end, "harnesses", function(err)
+		if s.picker == p then
+			end_launch_wait(s)
+			p.state = "error"; p.message = fmt.error(err)
+		end
+	end)
 end
 local function load_archived_page(s: any, p: any, offset: number)
 	p.state = "loading"
@@ -525,16 +611,21 @@ end
 local function launch_route(s: any, plan: any)
 	if type(plan.cwd) ~= "string" or type(plan.command) ~= "string" or plan.command == "" then s.error = "The launch plan was incomplete."; return end
 	s.picker = nil; s.confirm = nil
-	s.cx:open("tern-projects://launch?cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
-	toast(s, "info", "Starting " .. fmt.agent_label(s.launch_harness or ""), "In " .. fmt.path(plan.cwd))
+	-- A window attributes the link to whichever pane is focused when it opens. The nonce lets
+	-- the route tell our own launch (which may have lost focus) from text that merely looks like one.
+	local nonce = tostring(tern.now()) .. "-" .. tostring(s.cx.pane)
+	tern.kv.set("launch", {nonce = nonce, pane = s.cx.pane})
+	s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
 end
-launch_plan = function(s: any, harness: string)
+launch_plan = function(s: any, harness: string, from_default: boolean)
 	local target = s.launch_target
 	if not target then return end
 	s.launch_harness = harness
+	begin_launch_wait(s, "launch-plan")
 	if s.picker then s.picker.state = "loading"; s.picker.message = "Preparing launch…" end
 	local payload = {op = "launch-plan", harness = harness, project_id = target.project_id, cwd = target.cwd}
 	request(s, payload, function(plan)
+		end_launch_wait(s)
 		if #(plan.warnings or {}) == 0 then launch_route(s, plan); return end
 		s.pending_plan = plan
 		s.picker = nil
@@ -577,12 +668,19 @@ launch_plan = function(s: any, harness: string)
 		s.confirm = {kind = "launch", title = "Start " .. label .. " in " .. (target.label or "this project") .. (if #unsupported > 0 then "'s primary folder only?" else " without unavailable folders?"), body = body,
 			buttons = {{id = "cancel", label = "Cancel"}, {id = "launch-accept", label = "Start in " .. fmt.basename(plan.cwd), variant = "primary"}}, focus = 2, data = plan}
 	end, "launch", function(err)
+		end_launch_wait(s)
+		local message = fmt.error(err)
 		if target.project_id and string.find(err, "Primary source folder is missing or unreadable", 1, true) then
 			s.picker = nil
-			s.confirm = {kind = "missing-primary", title = "Primary folder is unavailable", body = {c.note(fmt.error(err)), c.note("Edit the project to choose another primary source folder.")},
+			s.confirm = {kind = "missing-primary", title = "Primary folder is unavailable", body = {c.note(message), c.note("Edit the project to choose another primary source folder.")},
 				buttons = {{id = "cancel", label = "Cancel"}, {id = "edit-launch-project", label = "Edit project…", variant = "primary"}}, focus = 1, data = target}
-		elseif s.picker then s.picker.state = "ready"; s.picker.message = fmt.error(err); toast(s, "error", "Couldn't prepare new chat", fmt.error(err))
-		else s.error = err; s.error_reload = false end
+		elseif from_default and (string.find(err, " CLI is not installed", 1, true) or string.find(err, " is unavailable:", 1, true)) then
+			-- The default tool is gone: say why and hand over to the picker instead of failing quietly.
+			s.default_unavailable = fmt.agent_label(harness) .. " isn't available. " .. message
+			toast(s, "error", "Couldn't prepare new chat", message)
+			harness_picker(s, "launch")
+		elseif s.picker then s.picker.state = "ready"; s.picker.message = message; toast(s, "error", "Couldn't prepare new chat", message)
+		else s.error = err; s.error_reload = false; toast(s, "error", "Couldn't prepare new chat", message) end
 	end)
 end
 local function launch_target_for(s: any, key: string?): boolean
@@ -602,19 +700,12 @@ end
 start_launch = function(s: any, choose: boolean)
 	local default = s.settings.default_harness
 	s.default_unavailable = nil
+	-- An installed default needs one launch plan, not the whole tool survey.
 	if choose or type(default) ~= "string" then harness_picker(s, "launch"); return end
-	request(s, {op = "harnesses"}, function(data)
-		for _, h in data.harnesses or {} do
-			if h.id == default then
-				if h.installed then launch_plan(s, default); return end
-				s.default_unavailable = fmt.agent_label(default) .. " isn't available. " .. (if type(h.reason) == "string" then h.reason else "Choose another harness.")
-			end
-		end
-		s.default_unavailable = s.default_unavailable or (fmt.agent_label(default) .. " isn't available. Choose another harness.")
-		harness_picker(s, "launch")
-	end, "harnesses")
+	launch_plan(s, default, true)
 end
 local function new_chat(s: any, key: string?, choose: boolean)
+	if s.launch_pending then return end
 	cancel_flow(s)
 	if not launch_target_for(s, key) then
 		s.editor = editor.new({name = "", folders = {}})
@@ -823,9 +914,9 @@ local function picker_action(s: any, act: string?)
 				mutate(s, {op = "settings-update", default_harness = it.id}, function()
 					s.settings.default_harness = it.id
 					toast(s, "success", "Default harness set to " .. it.label)
-					if s.picker == p then launch_plan(s, it.id) end
+					if s.picker == p then launch_plan(s, it.id, false) end
 				end)
-			else launch_plan(s, it.id) end
+			else launch_plan(s, it.id, false) end
 		end
 	elseif p.kind == "default-harness" then
 		if act == "choose" and it and not it.disabled then
@@ -937,6 +1028,12 @@ local function row_action(s: any, act: string, key: string)
 end
 action = function(s: any, act: string, value: string?)
 	if act == "dismiss-error" then s.error = nil; return end
+	if act == "cancel-launch" then
+		if not s.launch_pending then return end
+		cancel_flow(s)
+		toast(s, "info", "New chat cancelled")
+		return
+	end
 	if s.busy then return end
 	if act == "editor" then local a, v = string.match(fmt.unpct(value or ""), "^([^=]+)=(.*)$"); editor_intent(s, a or fmt.unpct(value or ""), v); return end
 	if act == "mode" then change_mode(s, value or "projects")
@@ -1090,9 +1187,9 @@ local function projects_bar(s: any, cols: number): any
 	if s.indexing then table.insert(kids, ui.el("span", {class = "tp-spin", title = "Indexing chat history…"}, {ui.node("spinner", {style = "ring"})})) end
 	local shortcut = if tern.runtime.os == "macos" then "⌘N" else "Ctrl+N"
 	if cols >= 48 then
-		table.insert(kids, c.button(if cols >= 56 then launch_hint(s) else "New chat", "new-chat", {key = "new-chat", icon = "pen", size = "sm", title = launch_hint(s) .. " (" .. shortcut .. ")"}))
+		table.insert(kids, c.button(if cols >= 56 then launch_hint(s) else "New chat", "new-chat", {key = "new-chat", icon = "pen", size = "sm", title = launch_hint(s) .. " (" .. shortcut .. ")", disabled = s.launch_pending}))
 	else
-		table.insert(kids, c.icon_button("pen", "new-chat", launch_hint(s) .. " (" .. shortcut .. ")", {key = "new-chat", size = "sm"}))
+		table.insert(kids, c.icon_button("pen", "new-chat", launch_hint(s) .. " (" .. shortcut .. ")", {key = "new-chat", size = "sm", disabled = s.launch_pending}))
 	end
 	table.insert(kids, c.icon_button("redo", "refresh", if s.indexing then "Indexing chat history…" else "Refresh chat history (Ctrl+R)", {key = "refresh", size = "sm", disabled = s.indexing}))
 	return ui.el("div", {key = "bar", class = "tp-bar"}, kids)
@@ -1324,7 +1421,7 @@ local function dock_view(s: any): any?
 			table.insert(kids, ui.el("div", {class = "tp-dock-where"}, paths))
 		end
 		table.insert(kids, ui.el("div", {class = "tp-dock-a"}, {
-			c.button("New chat", "new-chat=" .. fmt.pct(s.sel), {variant = "primary", size = "sm", icon = "pen", title = "New chat in " .. project_name(r)}),
+			c.button("New chat", "new-chat=" .. fmt.pct(s.sel), {variant = "primary", size = "sm", icon = "pen", title = "New chat in " .. project_name(r), disabled = s.launch_pending}),
 			c.button(if mine then "Edit" else "Save as project…", "edit-selected", {size = "sm", icon = if mine then "sliders" else "folder-plus"}),
 			c.icon_button("more", "actions", "More actions (⇧F10)", {size = "sm"}),
 		}))
@@ -1386,7 +1483,7 @@ end
 
 local panel: BlockDef<any> = {
 	init = function(cx, args, saved)
-		local s: any = {cx = cx, mode = args and args[1] or "projects", ctx_cwd = args and args[2] or "", view = "mine", projects = {}, pinned = {}, recent = {}, expanded = {}, more = {}, settings = {icon_style = "color"}, query = tf.new(""), query_all = false, scope = "all", sort = "updated", results = {}, total = 0, offset = 0, page = 0, rows = {}, order = {}, gen = 0, tokens = {}, alive = true, busy = false, indexing = false, loaded = false, archived = {}}
+		local s: any = {cx = cx, mode = args and args[1] or "projects", ctx_cwd = args and args[2] or "", view = "mine", projects = {}, pinned = {}, recent = {}, expanded = {}, more = {}, settings = {icon_style = "color"}, query = tf.new(""), query_all = false, scope = "all", sort = "updated", results = {}, total = 0, offset = 0, page = 0, rows = {}, order = {}, gen = 0, tokens = {}, alive = true, busy = false, indexing = false, loaded = false, archived = {}, launch_pending = false, launch_slow = false, launch_wait_seq = 0}
 		if saved then
 			if saved.view == "mine" or saved.view == "discovered" then s.view = saved.view end
 			if saved.scope == "workspace" or saved.scope == "repository" or saved.scope == "all" then s.scope = saved.scope end
@@ -1413,6 +1510,9 @@ local panel: BlockDef<any> = {
 		local building = cli.status()
 		if building then
 			table.insert(children, c.banner("building", "info", nil, building .. " This runs once after installing or updating and can take a few minutes.", nil, true))
+		end
+		if s.launch_pending then
+			table.insert(children, c.banner("launch-wait", "info", nil, wait_text(s, false), {c.button("Cancel", "cancel-launch", {size = "xs"})}, true))
 		end
 		if s.error then
 			local buttons = {}
@@ -1470,7 +1570,10 @@ local panel: BlockDef<any> = {
 		if name == "r" and k.ctrl then refresh(s); return true end
 		if name == "n" and (k.meta or (k.ctrl and tern.runtime.os ~= "macos")) then new_chat(s, nil, k.shift == true); return true end
 		if name == "/" and s.mode ~= "search" then change_mode(s, "search"); return true end
-		if name == "escape" and s.mode ~= "search" then s.sel = nil; s.settings_focus = nil; return true end
+		if name == "escape" and s.mode ~= "search" then
+			if s.launch_pending then cancel_flow(s); return true end
+			s.sel = nil; s.settings_focus = nil; return true
+		end
 		if s.mode == "settings" then return settings_key(s, k) end
 		if name == "f10" and k.shift then open_menu(s, nil); return true end
 		if name == "up" or name == "down" then nav(s, if name == "up" then -1 else 1); return true end

@@ -169,12 +169,23 @@ end)
 tern.route.link(function(link: any, cx: SessionContext)
 	local route, q = string.match(link.url, "^tern%-projects://([a-z]+)%?(.*)$")
 	if route ~= "resume" and route ~= "launch" then return nil end
-	if link.pane == nil or cx.session:focused() ~= link.pane then
-		return { handled = true }
-	end
+	if link.pane == nil then return { handled = true } end
 	local origin = find_pane(cx, link.pane)
-	if origin == nil or origin.block ~= KIND then
+	-- The panel records its own launch: the window credits the focused pane, which is not the
+	-- panel once focus moved, so the URL alone cannot prove where it came from.
+	local nonce = unpct(string.match(q, "n=([^&]*)") or "")
+	local pending = if nonce ~= "" then tern.kv.get("launch") else nil
+	local claimed = type(pending) == "table" and pending.nonce == nonce
+	if claimed then tern.kv.set("launch", nil) end
+	if claimed then
+		if pending.pane ~= link.pane or cx.session:focused() ~= link.pane then
+			cx:toast("error", "Chat not started", "Focus the Projects panel and try again.")
+			return { handled = true }
+		end
+	elseif origin == nil or origin.block ~= KIND then
 		-- A custom URL in unrelated terminal/chat content is not a launch request.
+		return { handled = true }
+	elseif cx.session:focused() ~= link.pane then
 		return { handled = true }
 	end
 	if cx.hosts:current().kind ~= "local" then

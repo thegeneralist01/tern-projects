@@ -51,7 +51,11 @@ function backend.ensure(cb: (string?, string?) -> ())
 		ready = path
 		local pending = waiters
 		waiters = {}
-		for _, done in pending do done(path, err) end
+		-- One waiter raising must not withhold the build result from the rest.
+		for _, done in pending do
+			local ok, failure = pcall(done, path, err)
+			if not ok then tern.log.error("Project backend waiter failed: " .. tostring(failure)) end
+		end
 	end
 	local home = tern.getenv("HOME") or tern.getenv("USERPROFILE") or ""
 	local cargoHome = tern.getenv("CARGO_HOME") or (home .. "/.cargo")
