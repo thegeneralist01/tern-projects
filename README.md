@@ -72,12 +72,14 @@ Inside any text field, standard terminal editing shortcuts just work (`⌘A`/`Ct
 
 | Agent | Fresh Launch Command | Native Resume | Multi-Folder Support | Deletion Support |
 |---|---|---|---|---|
-| **OMP** | `omp --cwd <primary> [--add-dir <extra>...]` | `omp --resume <path>` | ✅ Multiple `--add-dir` | Transcript + artifact unlinking |
+| **OMP** | `omp --cwd <primary> [--add-dir <extra>...]` | `omp --resume <path>` | ✅ Multiple `--add-dir` | Transcript, artifacts, and session-attributed prompt history |
 | **Claude Code** | `claude [--add-dir <extra>...]` | `claude --resume <id>` | ✅ Multiple `--add-dir` | Exact session history filtering |
 | **Codex** | `codex --cd <primary> [--add-dir <extra>...]` | `codex resume <id>` | ✅ Multiple `--add-dir` | `codex delete <uuid> --force` |
 | **Pi** | `pi` | `pi --session <path>` | Single root | Exact file unlinking |
 | **OpenCode** | `opencode <primary>` | `opencode --session <id>` | Single root | `opencode session delete <id>` |
 | **Cursor** | `cursor-agent` / native CLI | Resumes in directory | Directory | Clean database record pruning |
+
+OMP keeps one history entry per distinct prompt and associates it with the most recent session that used it. Deleting a chat removes entries currently attributed to that session; entries attributed to another session or with no recorded session are retained.
 
 ---
 

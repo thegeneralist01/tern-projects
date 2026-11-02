@@ -8,6 +8,7 @@ pub(super) struct Plan {
     rewrites: Vec<(PathBuf, Vec<u8>)>,
     history_db: Option<PathBuf>,
     history_tables: Vec<&'static str>,
+    history_fts: bool,
     id: String,
 }
 
@@ -46,6 +47,7 @@ pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
         rewrites: vec![],
         history_db: None,
         history_tables: vec![],
+        history_fts: false,
         id: chat.id.clone(),
     };
     let mut stamps = BTreeSet::new();
@@ -85,12 +87,38 @@ pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
         if db_path.try_exists()? {
             add_database(&root, &db_path, &mut stamps)?;
             let conn = crate::db::open_readonly(&db_path)?;
-            for table in ["session_titles", "session_recaps"] {
+            for table in ["history", "session_titles", "session_recaps"] {
                 if table_exists(&conn, table)? {
                     // Preparing verifies the required column before the first unlink.
                     conn.prepare(&format!("SELECT session_id FROM {table} LIMIT 0"))?;
                     p.history_tables.push(table);
                 }
+            }
+            if table_exists(&conn, "history_fts")? {
+                ensure!(p.history_tables.contains(&"history"), "OMP history_fts has no history table");
+                let sql: String = conn.query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='history_fts'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let schema: String = sql
+                    .chars()
+                    .filter(|c| !c.is_ascii_whitespace() && !['\'', '"', '`', '[', ']'].contains(c))
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+                let options = schema
+                    .strip_prefix("createvirtualtablehistory_ftsusingfts5(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    .context("Unsupported OMP history_fts schema")?;
+                ensure!(
+                    ["prompt", "content=history", "content_rowid=id"]
+                        .iter()
+                        .all(|expected| options.split(',').any(|option| option == *expected)),
+                    "Unsupported OMP history_fts schema"
+                );
+                conn.prepare("SELECT id, prompt FROM history LIMIT 0")?;
+                conn.prepare("SELECT rowid, prompt FROM history_fts LIMIT 0")?;
+                p.history_fts = true;
             }
             p.history_db = Some(db_path);
         }
@@ -337,6 +365,15 @@ pub(super) fn execute(p: &Plan) -> Result<()> {
         } else {
             None
         };
+        if let Some(tx) = transaction.as_ref() {
+            for table in &p.history_tables {
+                let removed = tx.execute(&format!("DELETE FROM {table} WHERE session_id=?1"), [&p.id])?;
+                if *table == "history" && removed > 0 && p.history_fts {
+                    // Rebuild from surviving prompts, including when the old index was inconsistent.
+                    tx.execute("INSERT INTO history_fts(history_fts) VALUES('rebuild')", [])?;
+                }
+            }
+        }
         for path in &p.removals {
             let directory = std::fs::symlink_metadata(path)?.is_dir();
             safe_path(&p.root, path, directory)?;
@@ -352,9 +389,6 @@ pub(super) fn execute(p: &Plan) -> Result<()> {
             done.push(replacement.destination.to_string_lossy().into_owned());
         }
         if let Some(tx) = transaction {
-            for table in &p.history_tables {
-                tx.execute(&format!("DELETE FROM {table} WHERE session_id=?1"), [&p.id])?;
-            }
             tx.commit()?;
             if let Some(path) = &p.history_db {
                 done.push(path.to_string_lossy().into_owned());

@@ -139,6 +139,157 @@ fn omp_deletes_owned_artifacts_but_pi_unlinks_only_transcript() {
         );
     }
 }
+
+#[test]
+fn omp_deletion_removes_only_owned_prompt_history_and_fts_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let neighbor = seed(&home, "omp", "neighbor");
+    let neighbor_bytes = std::fs::read(&neighbor).unwrap();
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL DEFAULT 0, cwd TEXT, session_id TEXT, use_count INTEGER NOT NULL DEFAULT 1);
+         CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id');
+         CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN INSERT INTO history_fts(rowid, prompt) VALUES (new.id, new.prompt); END;
+         INSERT INTO history(prompt, session_id) VALUES('removedneedle target prompt', 'target'), ('keepneedle neighbor prompt', 'neighbor'), ('legacyneedle unattributed prompt', NULL);
+         INSERT INTO history(prompt, session_id, use_count) VALUES('sharedneedle reused prompt', 'neighbor', 2);",
+    )
+    .unwrap();
+    drop(conn);
+
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    assert_eq!(library(&db, &home, deletion(&p))["ok"], true);
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(&neighbor).unwrap(), neighbor_bytes);
+
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    let remaining: Vec<(String, Option<String>, i64)> = conn
+        .prepare("SELECT prompt, session_id, use_count FROM history ORDER BY prompt")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        remaining,
+        vec![
+            ("keepneedle neighbor prompt".into(), Some("neighbor".into()), 1),
+            ("legacyneedle unattributed prompt".into(), None, 1),
+            ("sharedneedle reused prompt".into(), Some("neighbor".into()), 2),
+        ]
+    );
+    for (term, expected) in [("removedneedle", 0), ("keepneedle", 1), ("sharedneedle", 1), ("legacyneedle", 1)] {
+        let count: i64 = conn.query_row("SELECT count(*) FROM history_fts WHERE history_fts MATCH ?1", [term], |row| row.get(0)).unwrap();
+        assert_eq!(count, expected, "history search for {term}");
+    }
+    conn.execute("INSERT INTO history_fts(history_fts, rank) VALUES('integrity-check', 1)", []).unwrap();
+}
+
+#[test]
+fn omp_rejects_incompatible_history_fts_before_removing_the_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let original = std::fs::read(&target).unwrap();
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, session_id TEXT);
+         CREATE VIRTUAL TABLE history_fts USING fts5(prompt);
+         CREATE TRIGGER history_ad AFTER DELETE ON history WHEN old.session_id='neighbor' BEGIN DELETE FROM history_fts WHERE rowid=old.id; END;
+         INSERT INTO history VALUES(1, 'preserveneedle prompt', 'target');
+         INSERT INTO history_fts(rowid, prompt) VALUES(1, 'preserveneedle prompt');",
+    )
+    .unwrap();
+    drop(conn);
+
+    index(&db, &home);
+    blocked_or_failure(&db, &home, "omp:target");
+    assert_eq!(std::fs::read(&target).unwrap(), original);
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM history WHERE session_id='target'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    let matches: i64 = conn
+        .query_row("SELECT count(*) FROM history_fts WHERE history_fts MATCH 'preserveneedle'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(matches, 1);
+}
+
+#[test]
+fn omp_deletion_keeps_fts_consistent_when_history_has_a_delete_trigger() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, session_id TEXT);
+         CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id');
+         CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN INSERT INTO history_fts(rowid, prompt) VALUES(new.id, new.prompt); END;
+         CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN INSERT INTO history_fts(history_fts, rowid, prompt) VALUES('delete', old.id, old.prompt); END;
+         INSERT INTO history VALUES(1, 'removedtriggerword prompt', 'target'), (2, 'kepttriggerword prompt', 'neighbor');",
+    )
+    .unwrap();
+    drop(conn);
+
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    assert_eq!(library(&db, &home, deletion(&p))["ok"], true);
+    assert!(!target.exists());
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    for (term, expected) in [("removedtriggerword", 0), ("kepttriggerword", 1)] {
+        let count: i64 = conn.query_row("SELECT count(*) FROM history_fts WHERE history_fts MATCH ?1", [term], |row| row.get(0)).unwrap();
+        assert_eq!(count, expected, "history search for {term}");
+    }
+    conn.execute("INSERT INTO history_fts(history_fts, rank) VALUES('integrity-check', 1)", []).unwrap();
+}
+
+#[test]
+fn omp_deletion_repairs_a_previously_desynchronized_history_index() {
+    for with_delete_trigger in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let db = temp.path().join("index.sqlite");
+        let target = seed(&home, "omp", "target");
+        let history_path = home.join(".omp/agent/history.db");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT NOT NULL, session_id TEXT);
+             CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id');
+             CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN INSERT INTO history_fts(rowid, prompt) VALUES(new.id, new.prompt); END;
+             INSERT INTO history VALUES(1, 'missingneedle prompt', 'target'), (2, 'neighborneedle prompt', 'neighbor');
+             INSERT INTO history_fts(history_fts, rowid, prompt) VALUES('delete', 1, 'missingneedle prompt');
+             INSERT INTO history_fts(rowid, prompt) VALUES(99, 'orphanneedle prompt');",
+        )
+        .unwrap();
+        if with_delete_trigger {
+            conn.execute_batch("CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN INSERT INTO history_fts(history_fts, rowid, prompt) VALUES('delete', old.id, old.prompt); END;").unwrap();
+        }
+        drop(conn);
+
+        index(&db, &home);
+        let p = preview(&db, &home, "omp:target");
+        assert!(p["blocked_reason"].is_null(), "{p}");
+        assert_eq!(library(&db, &home, deletion(&p))["ok"], true);
+        assert!(!target.exists());
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        for (term, expected) in [("missingneedle", 0), ("neighborneedle", 1), ("orphanneedle", 0)] {
+            let count: i64 = conn.query_row("SELECT count(*) FROM history_fts WHERE history_fts MATCH ?1", [term], |row| row.get(0)).unwrap();
+            assert_eq!(count, expected, "history search for {term}");
+        }
+        conn.execute("INSERT INTO history_fts(history_fts, rank) VALUES('integrity-check', 1)", []).unwrap();
+    }
+}
 #[test]
 fn source_change_wrong_identity_and_symlink_refuse_without_removal() {
     let temp = tempfile::tempdir().unwrap();

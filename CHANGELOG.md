@@ -5,6 +5,7 @@ All notable changes to `tern-projects` will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Permanently deleting an OMP chat removes prompt history attributed to that session and rebuilds its full-text index, repairing any existing index inconsistencies.
 - **Projects commands and New chat on Tern 0.9.5**: `Projects`, `Projects: Search` and `Projects: Settings` now open the panel, and **New chat** opens its tab. Tern 0.9.5's `cx.session:pane(id)` and `cx.layout:split(id, …)` can return nil for a live pane id, so the window now looks panes up through `cx.session:panes()` and opens the panel with `cx:new_block(…, "split")` when `split` finds no target.
 - Thanks to [Florian Séran (@flosrn)](https://github.com/flosrn) for this fix, imported from [commit `abcdcdf`](https://github.com/flosrn/tern-projects/commit/abcdcdfc87f85868d38835e5d7fbaa0fb7b3648e).
 - **New chat no longer goes quiet.** `New chat` with a default harness now asks only for that launch plan instead of surveying every installed CLI first (a survey that probes each tool with a 5 second cap and showed nothing meanwhile). The panel shows `Preparing new chat…` with a `Cancel` action, explains itself after 5 seconds, and gives up after 15 seconds (`launch-plan`) or 65 seconds (tool survey) with a retryable error — or names the build when `cli.status()` says one is running. Further clicks during a wait are ignored and the New chat buttons are disabled.
