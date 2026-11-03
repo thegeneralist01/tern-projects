@@ -41,6 +41,30 @@ local timer_generation = 0
 local subscribers: { [number]: () -> () } = {}
 local next_subscriber = 0
 
+local function installer_executable(): string
+	local windows = tern.runtime.os == "windows"
+	local name = if windows then "tern.exe" else "tern"
+	local candidates = {}
+	for directory in (tern.getenv("PATH") or ""):gmatch(if windows then "[^;]+" else "[^:]+") do
+		if windows then directory = directory:gsub('^"(.*)"$', "%1") end
+		-- Resolve only absolute entries; do not search the plugin's working directory.
+		if directory:sub(1, 1) == "/" or (windows and (directory:match("^%a:[/\\]") or directory:sub(1, 2) == "\\\\")) then
+			table.insert(candidates, directory .. "/" .. name)
+		end
+	end
+	local home = tern.getenv("HOME") or tern.getenv("USERPROFILE")
+	if home and not windows then table.insert(candidates, home .. "/.local/bin/tern") end
+	if tern.runtime.os == "macos" then
+		if home then table.insert(candidates, home .. "/Applications/Tern.app/Contents/MacOS/tern") end
+		table.insert(candidates, "/Applications/Tern.app/Contents/MacOS/tern")
+	end
+	for _, path in candidates do
+		if tern.fs.exists(path) then return path end
+	end
+	-- Preserve the platform's own executable lookup for other installation layouts.
+	return name
+end
+
 local function version_parts(value: string): { number }?
 	local a, b, c = value:match("^(%d+)%.(%d+)%.(%d+)$")
 	if not a or not b or not c then return nil end
@@ -385,9 +409,10 @@ function updates.install(expected_version: string)
 		finished = true
 		finish_install(expected_version, failure)
 	end
-	local ok, spawn_error = pcall((tern :: any).process.run,
-		{ "tern", "plugin", "install", "github.com/thegeneralist01/tern-projects", "--force" },
-		{ timeout_ms = INSTALL_SECONDS * 1000 }, function(result: any)
+	local ok, spawn_error = pcall(function()
+		tern.process.run(
+			{ installer_executable(), "plugin", "install", "github.com/thegeneralist01/tern-projects", "--force" },
+			{ timeout_ms = INSTALL_SECONDS * 1000 }, function(result: any)
 			if finished then return end
 			if result.timed_out then finish("Installation timed out after 120 seconds."); return end
 			if result.status ~= 0 then
@@ -397,6 +422,7 @@ function updates.install(expected_version: string)
 			end
 			finish(nil)
 		end)
+	end)
 	if not ok and not finished then finish("Cannot start the Tern installer: " .. tostring(spawn_error)) end
 end
 

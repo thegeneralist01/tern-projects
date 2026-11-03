@@ -39,6 +39,8 @@ tern plugin install github.com/thegeneralist01/tern-projects --force
 
 **Copy command** in Plugin updates copies that same command, including when a network check or installation fails. Tern's installer replaces plugin files, not your project library or plugin data; the history index remains a rebuildable cache. Tern refuses to overwrite linked development checkouts, so update the linked checkout instead.
 
+In-app installation looks for Tern in the host's `PATH`, then standard user-local CLI and macOS application locations. If an older installation reports that it cannot start the Tern installer, run the manual command above from your terminal once to get the corrected updater.
+
 The in-app installer refuses to run while permanent chat deletion is active, and deletion cannot start during installation. Wait for deletion to finish before running the manual command too.
 
 ---

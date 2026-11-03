@@ -2,6 +2,12 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.6] — 2026-11-03
+
+### Fixed
+- **In-app installer discovery**: resolve the Tern executable from the host's PATH or standard user-local CLI and macOS application locations before starting the approved installation. Updates no longer depend on the GUI host finding a bare `tern` command. Installation consent, deletion exclusion, disk verification, and the single-attempt policy are unchanged.
+- Older installations that cannot launch the installer can bootstrap this fix with the README's manual update command from a terminal.
+
 ## [0.2.5] — 2026-11-03
 
 ### Fixed

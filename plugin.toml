@@ -1,7 +1,7 @@
 schema = 1
 id = "tern-projects"
 name = "Projects"
-version = "0.2.5"
+version = "0.2.6"
 description = "Curated multi-folder projects, pinned chats and history search across Codex, Claude Code, OMP, Pi, OpenCode and Cursor."
 icon = "folder"
 host = "host.luau"
