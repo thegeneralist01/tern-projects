@@ -96,6 +96,7 @@ tern plugin reload                               # Reload plugin in running Tern
   - Every in-app installation requires explicit, version-bound UI approval and invokes the resolved Tern executable with fixed `plugin install github.com/thegeneralist01/tern-projects --force` arguments, never a shell command from remote metadata. The installer fetches latest official `main`, not a pinned version; success requires disk confirmation of at least the last checked version.
   - Installer discovery prefers absolute host PATH entries, then user-local Unix CLI and macOS application locations, retaining native executable lookup for other layouts. Discovery and spawn failures clear pending approval and release the installation guard; never retry installation automatically.
   - Pending installation status survives plugin reload, but installation is never automatically started or retried. Linked development checkouts remain protected by Tern's installer.
+  - At startup, a saved installation failure is cleared once the installed version reaches its target `latest_version`; check failures (no target version) and still-newer targets keep their error.
   - A shared host guard excludes in-app installation and active permanent deletion, including queued deletions becoming ready during installation. Updater checks never modify the library/index.
   - Increase `plugin.toml`'s version when publishing an update; commit changes without a version increase are not update notifications.
 - **Fail-Closed Deletion Safety**:

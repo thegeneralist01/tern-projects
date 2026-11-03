@@ -2,6 +2,11 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.7] — 2026-11-03
+
+### Fixed
+- **Stale update errors**: after a terminal update installs the version a failed in-app installation targeted (or newer), Settings shows the plugin as current instead of keeping the old installer error. Check failures and failures for versions still newer than the installation remain visible.
+
 ## [0.2.6] — 2026-11-03
 
 ### Fixed

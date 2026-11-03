@@ -261,6 +261,13 @@ function updates.start()
 		state.status = "error"
 		state.message = manual(tostring(read_error))
 	else
+		-- A failed in-app install leaves latest_version set; a newer installation
+		-- from the terminal supersedes it, so the saved failure is stale.
+		if cache.failure and cache.latest_version and not newer(cache.latest_version, installed) then
+			cache.failure = nil
+			local saved, save_error = save()
+			if not saved then tern.log.error("Cannot clear superseded update failure: " .. tostring(save_error)) end
+		end
 		cached_state()
 	end
 	schedule()
