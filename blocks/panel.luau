@@ -1500,7 +1500,7 @@ local function updates_view(s: any): any
 		setting_row("update-version", false, "Installed version", "Projects plugin on this machine.", c.note(snapshot.current_version)),
 		setting_row("update-latest", false, "Latest version", if snapshot.checked_at then "Checked " .. fmt.ago(snapshot.checked_at * 1000) else "No completed check yet.",
 			c.note(snapshot.latest_version or "Not checked")),
-		setting_row("update-auto", f == "update-auto", "Automatic checks", "At startup and every 24 hours.",
+		setting_row("update-auto", f == "update-auto", "Automatic checks", "At startup and every 6 hours.",
 			if busy then c.button(if snapshot.automatic then "On" else "Off", nil, {size = "sm", disabled = true, focused = f == "update-auto"})
 			else c.seg({{id = "on", label = "On"}, {id = "off", label = "Off"}}, automatic, "update-auto", {size = "sm", focused = if f == "update-auto" then automatic else nil})),
 		setting_row("update-auto-install", f == "update-auto-install", "Automatic installation",

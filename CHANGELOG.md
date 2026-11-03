@@ -2,6 +2,11 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.9] — 2026-11-03
+
+### Changed
+- **Update checks every 6 hours**: automatic checks now run at startup when the last check is at least 6 hours old, then every 6 hours, instead of daily. With Automatic installation enabled, new releases arrive within about 6 hours.
+
 ## [0.2.8] — 2026-11-03
 
 ### Added

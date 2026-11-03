@@ -29,7 +29,7 @@ type Cache = {
 local COMMAND = "tern plugin install github.com/thegeneralist01/tern-projects --force"
 local ENDPOINT = "https://raw.githubusercontent.com/thegeneralist01/tern-projects/main/plugin.toml"
 local KEY = "plugin-updates:v1"
-local DAY = 24 * 60 * 60
+local CHECK_INTERVAL = 6 * 60 * 60
 local INSTALL_SECONDS = 120
 local MAX_METADATA = 65536
 local state: State = { status = "idle", current_version = "unknown", automatic = true, auto_install = false, install_blocked = false, command = COMMAND }
@@ -210,9 +210,9 @@ schedule = function()
 	cancel_timer()
 	if not started or not storage_ready or not state.automatic or active then return end
 	local now = os.time()
-	local age = if cache.attempted_at then now - cache.attempted_at else DAY
+	local age = if cache.attempted_at then now - cache.attempted_at else CHECK_INTERVAL
 	-- A rollback/future timestamp is due now, never a multi-year suppression.
-	local delay = if age < 0 then 0 else math.max(0, DAY - age)
+	local delay = if age < 0 then 0 else math.max(0, CHECK_INTERVAL - age)
 	local generation = timer_generation
 	timer = tern.timer(delay * 1000, function()
 		if generation ~= timer_generation then return end
