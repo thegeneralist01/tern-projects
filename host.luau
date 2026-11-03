@@ -1,7 +1,8 @@
 --!strict
--- tern-projects host half: ensure the data directory exists, then register the panel.
+-- tern-projects host half: start updates independently, then register the panel.
 
 pcall(tern.fs.mkdir, tern.plugin.data)
+require("./lib/updates").start()
 tern.block.define("panel", require("./blocks/panel"))
 
 require("./lib/cli").ensure(function(_path, err)

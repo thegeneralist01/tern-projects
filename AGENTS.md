@@ -13,17 +13,18 @@ LICENSE              Repository license
 docs/                Documentation and technical guides
   adding-a-harness.md Step-by-step guide for implementing new assistant adapters
   screenshots/       Showcase images for README and documentation
-host.luau            Host process half: registers the panel block
+host.luau            Host process half: starts update checks and registers the panel block
 window.luau          Window process half: keybind migration, toggles, launch/resume routes
 blocks/panel.luau    Main UI: Projects (My Projects / Discovered), Search, Settings
 lib/backend.luau     Automatic Cargo build at host startup, binary cache, request queuing
-lib/cli.luau         Binary discovery, CLI invocation, JSON decoding
+lib/cli.luau         CLI invocation, JSON decoding, deletion/update coordination
 lib/fmt.luau         Formatting helpers: dates, agent labels/icons, URL encoding, snippets
 lib/input.luau       Keyboard shortcuts and native UTF-16 edit handling
 lib/picker.luau      Modal picker component for selection sheets
 lib/project-editor.luau  Unsaved project draft state and child directory browser
 lib/textfield.luau   UTF-8 text field component
 lib/ui.luau          Reusable UI elements, layout widgets, and list views
+lib/updates.luau     Host-only version checks, consent-gated installer, persistent recovery
 indexer/             Rust backend (`tern-projects` CLI binary)
   src/main.rs        CLI subcommands: index, query, projects, library, migrate-data
   src/model.rs       Data types: Candidate, Parsed, Resume, SessionJson
@@ -88,6 +89,12 @@ tern plugin reload                               # Reload plugin in running Tern
   - `library.sqlite` stores durable user configurations (curated projects, folder associations, custom pins, chat assignments, global settings). Never drop or clear `library.sqlite` during index rebuilds.
 - **Automatic Compilation**:
   - `lib/backend.luau` automatically compiles the Rust binary with Cargo when the plugin loads and caches the binary inside `<plugin.data>/backend/`. Requests queue until compilation finishes.
+- **Plugin Updates**:
+  - `lib/updates.luau` starts before the Rust backend. Automatic checks compare the official `main/plugin.toml` stable numeric version at most daily; Tern KV stores updater preferences, attempt/cache timestamps, and pending-install recovery independently of `library.sqlite`.
+  - Every in-app installation requires explicit, version-bound UI approval and uses only `tern plugin install github.com/thegeneralist01/tern-projects --force` as argv, never a shell command from remote metadata. The installer fetches latest official `main`, not a pinned version; success requires disk confirmation of at least the last checked version.
+  - Pending installation status survives plugin reload, but installation is never automatically started or retried. Linked development checkouts remain protected by Tern's installer.
+  - A shared host guard excludes in-app installation and active permanent deletion, including queued deletions becoming ready during installation. Updater checks never modify the library/index.
+  - Increase `plugin.toml`'s version when publishing an update; commit changes without a version increase are not update notifications.
 - **Fail-Closed Deletion Safety**:
   - Permanent chat deletion verifies source identity and idle store conditions before removing any files or database records.
   - Harnesses with native CLI commands (e.g. Codex, OpenCode) use their verified native CLI deletion subcommands.

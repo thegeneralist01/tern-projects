@@ -2,6 +2,7 @@
 -- Helpers for spawning tern-projects and decoding its JSON output.
 
 local backend = require("./backend")
+local updates = require("./updates")
 local cli = { status = backend.status, ensure = backend.ensure }
 
 -- Path to the index SQLite DB.
@@ -14,10 +15,16 @@ end
 -- or cb(nil, errmsg) on non-zero exit, decode failure, timeout, or a spawn that
 -- never started. Active requests report exactly once; cancelled callers neither
 -- start queued processes nor receive late results.
-local function spawn(args: { string }, timeout_ms: number, stdin: string?, cb: (data: any?, err: string?) -> (), should_start: (() -> boolean)?)
+local function spawn(args: { string }, timeout_ms: number, stdin: string?, cb: (data: any?, err: string?) -> (), should_start: (() -> boolean)?, deleting: boolean?)
 	backend.ensure(function(b, buildErr)
 		if should_start and not should_start() then return end
 		if not b then cb(nil, buildErr); return end
+		local release_deletion: (() -> ())? = nil
+		if deleting then
+			local release, err = updates.begin_deletion()
+			if not release then cb(nil, err); return end
+			release_deletion = release
+		end
 		local argv: { string } = { b, "--db", cli.db() }
 		for _, a in args do
 			table.insert(argv, a)
@@ -26,12 +33,13 @@ local function spawn(args: { string }, timeout_ms: number, stdin: string?, cb: (
 		local function finish(data: any?, err: string?)
 			if finished then return end
 			finished = true
+			if release_deletion then release_deletion(); release_deletion = nil end
 			if should_start and not should_start() then return end
 			cb(data, err)
 		end
 		local started, startErr = pcall((tern :: any).process.run, argv, { timeout_ms = timeout_ms, stdin = stdin }, function(result: any, _cx: any?)
 			if finished then return end
-			if should_start and not should_start() then finished = true; return end
+			if should_start and not should_start() then finish(nil, nil); return end
 			if result.timed_out then
 				finish(nil, "timed out")
 				return
@@ -74,7 +82,7 @@ function cli.request(payload: any, cb: (data: any?, err: string?) -> (), should_
 			err = "Deletion timed out. The original chat may already have been removed; refresh before obtaining a new deletion preview."
 		end
 		cb(data, err)
-	end, should_start)
+	end, should_start, payload.op == "delete")
 end
 
 -- Convenience timeout constants (ms).

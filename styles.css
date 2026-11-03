@@ -296,7 +296,7 @@
 	.tp-dock-a { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0 24px; }
 
 	/* Settings ------------------------------------------------------------------------ */
-	.tp-settings { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; padding-bottom: 12px; }
+	.tp-settings { display: flex; flex: 1 1 0; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; padding-bottom: 12px; }
 	.tp-sec-t { margin: 12px 8px 0; font: 600 11.5px var(--sans); color: var(--t3); }
 	.tp-sec-t:first-child { margin-top: 2px; }
 	.tp-card { --tp-surface: var(--card); display: flex; flex-direction: column; border-radius: 10px; background: var(--card); box-shadow: 0 0 0 1px var(--l2); }

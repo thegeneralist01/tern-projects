@@ -8,6 +8,7 @@ local input = require("../lib/input")
 local editor = require("../lib/project-editor")
 local picker = require("../lib/picker")
 local c = require("../lib/ui")
+local updates = require("../lib/updates")
 
 local PAGE = 150 -- rendered list rows; Tern virtualizes (and unwires row actions) past 200
 local SEARCH_PAGE = 50
@@ -26,6 +27,11 @@ local function live(s: any): boolean
 	if not s.alive then return false end
 	if pane_alive(s.cx.pane) then return true end
 	s.alive = false
+	if s.update_unsubscribe then
+		local unsubscribe = s.update_unsubscribe
+		s.update_unsubscribe = nil
+		unsubscribe()
+	end
 	cancel_flow(s)
 	return false
 end
@@ -931,7 +937,23 @@ end
 
 -- Actions ------------------------------------------------------------------------------------
 
-local SETTINGS = {"default", "icons", "archived", "refresh"}
+local SETTINGS = {"default", "icons", "archived", "refresh", "update-auto", "update-check", "update-install", "update-copy"}
+local function update_busy(snapshot: any): boolean
+	return snapshot.status == "checking" or snapshot.status == "installing"
+end
+local function confirm_update(s: any)
+	local snapshot = updates.get()
+	if snapshot.status ~= "available" or not snapshot.latest_version or snapshot.install_blocked then return end
+	cancel_flow(s)
+	s.update_confirm_seq = (s.update_confirm_seq or 0) + 1
+	local accept = "update-install-" .. tostring(s.update_confirm_seq)
+	s.confirm = {kind = "update", title = "Install latest official Projects plugin?", body = {
+		c.note("Replace installed plugin files with the official main branch as it exists when installation runs, then reload the plugin. Open Projects panes may close."),
+		c.note("Linked development checkouts are not overwritten. Use a regular plugin installation to update from here."),
+		c.note("Installed " .. snapshot.current_version .. ". Last checked version: " .. snapshot.latest_version .. "; the official version may advance before installation. Updates are never installed automatically."),
+	}, buttons = {{id = "cancel", label = "Cancel"}, {id = accept, label = "Install update", variant = "primary"}}, focus = 1,
+		version = snapshot.latest_version, accept = accept}
+end
 local function hide_busy(s: any)
 	cancel_flow(s)
 	s.editor = nil; s.archived_picker = nil
@@ -1005,12 +1027,26 @@ local function confirm_action(s: any, id: string)
 	if not conf then return end
 	for _, b in conf.buttons do if b.id == id and b.disabled then return end end
 	if id == "cancel" then
-		if s.busy then hide_busy(s); return end
+		if s.busy and conf.kind ~= "update" then hide_busy(s); return end
 		cancel_flow(s)
 		if s.archived_picker then s.picker = s.archived_picker; s.archived_picker = nil end
 		return
 	end
-	if s.busy then return end
+	if s.busy and conf.kind ~= "update" then return end
+	if conf.kind == "update" then
+		-- Only this dialog's affirmative action can grant consent, never a stale click.
+		if id ~= conf.accept then return end
+		local snapshot = updates.get()
+		if snapshot.status ~= "available" or snapshot.latest_version ~= conf.version or snapshot.install_blocked then
+			conf.error = "The available update changed. Cancel and review the latest version before installing."
+			conf.buttons[2].disabled = true
+			conf.focus = 1
+			return
+		end
+		s.confirm = nil
+		updates.install(conf.version)
+		return
+	end
 	if id == "edit-launch-project" then
 		local pid = conf.data.project_id
 		for _, p in s.projects do if tostring(p.id) == pid then open_editor(s, p); return end end
@@ -1077,6 +1113,26 @@ action = function(s: any, act: string, value: string?)
 		if not s.launch_pending then return end
 		cancel_flow(s)
 		toast(s, "info", "New chat cancelled")
+		return
+	end
+	-- Plugin updates do not depend on the Rust backend or its mutation state.
+	if act == "update-review" then
+		change_mode(s, "settings"); s.settings_focus = "update-install"; return
+	elseif act == "update-copy" then
+		s.settings_focus = "update-copy"
+		copy(s, updates.get().command, "update command")
+		return
+	elseif act == "update-check" or act == "update-auto" or act == "update-install" then
+		local snapshot = updates.get()
+		if update_busy(snapshot) then return end
+		if act == "update-check" then s.settings_focus = "update-check"; updates.check()
+		elseif act == "update-install" then s.settings_focus = "update-install"; confirm_update(s)
+		else
+			s.settings_focus = "update-auto"
+			if value == nil or value == "on" or value == "off" then
+				updates.set_automatic(if value == nil then not snapshot.automatic else value == "on")
+			end
+		end
 		return
 	end
 	if s.busy then return end
@@ -1167,11 +1223,13 @@ local function settings_key(s: any, k: Key): boolean
 	end
 	local f = s.settings_focus
 	if f == "icons" and (name == "left" or name == "right") then action(s, "icon-style", if name == "left" then "color" else "monochrome"); return true end
+	if f == "update-auto" and (name == "left" or name == "right") then action(s, "update-auto", if name == "left" then "on" else "off"); return true end
 	if (name == "enter" or name == "space") and f then
 		if f == "default" then action(s, "default-picker", nil)
 		elseif f == "icons" then action(s, "icon-style", nil)
 		elseif f == "archived" then action(s, "archived", nil)
-		elseif f == "refresh" then refresh(s) end
+		elseif f == "refresh" then refresh(s)
+		elseif f == "update-auto" or f == "update-check" or f == "update-install" or f == "update-copy" then action(s, f, nil) end
 		return true
 	end
 	return false
@@ -1379,6 +1437,46 @@ local function setting_row(key: string, focused: boolean, label: string, desc: s
 		ui.el("div", {class = "tp-set-c"}, {control}),
 	})
 end
+local function updates_view(s: any): any
+	local snapshot = s.update_snapshot
+	local f, busy = s.settings_focus, update_busy(snapshot)
+	local labels = {
+		idle = "Not checked yet", checking = "Checking for updates…", current = "Up to date",
+		available = "Update available", installing = "Installing update…", updated = "Update installed", error = "Update failed",
+	}
+	local descriptions = {
+		idle = "Check the official GitHub main branch for a newer version.",
+		checking = "Contacting the official GitHub repository.",
+		current = "The installed version is current.",
+		available = "Review and confirm before replacing installed plugin files.",
+		installing = "Replacing installed files and reloading the plugin. Please wait.",
+		updated = "The new plugin version is installed.",
+		error = "Check again, or copy the update command to run in your terminal.",
+	}
+	local automatic = if snapshot.automatic then "on" else "off"
+	local rows = {
+		setting_row("update-version", false, "Installed version", "Projects plugin on this machine.", c.note(snapshot.current_version)),
+		setting_row("update-latest", false, "Latest version", if snapshot.checked_at then "Checked " .. fmt.ago(snapshot.checked_at * 1000) else "No completed check yet.",
+			c.note(snapshot.latest_version or "Not checked")),
+		setting_row("update-auto", f == "update-auto", "Automatic checks", "At startup and every 24 hours. Never auto-installs.",
+			if busy then c.button(if snapshot.automatic then "On" else "Off", nil, {size = "sm", disabled = true, focused = f == "update-auto"})
+			else c.seg({{id = "on", label = "On"}, {id = "off", label = "Off"}}, automatic, "update-auto", {size = "sm", focused = if f == "update-auto" then automatic else nil})),
+		setting_row("update-check", f == "update-check", labels[snapshot.status], descriptions[snapshot.status],
+			c.button(if snapshot.status == "checking" then "Checking…" else "Check now", "update-check", {size = "sm", disabled = busy, focused = f == "update-check"})),
+	}
+	if snapshot.message then
+		table.insert(rows, c.banner("update-message", if snapshot.status == "error" then "error" else "info", if snapshot.status == "error" then "warn" else nil, snapshot.message))
+	end
+	table.insert(rows, setting_row("update-install", f == "update-install", "Install update",
+		if snapshot.install_blocked then "Wait for permanent chat deletion to finish."
+		elseif snapshot.status == "available" then "Review the latest official plugin (last checked " .. snapshot.latest_version .. ")."
+		elseif snapshot.status == "installing" then "Installation is in progress."
+		else "Check for an available update first.",
+		c.button(if snapshot.status == "installing" then "Installing…" else "Review…", "update-install", {size = "sm", variant = "primary", disabled = snapshot.status ~= "available" or snapshot.install_blocked, focused = f == "update-install"})))
+	table.insert(rows, setting_row("update-copy", f == "update-copy", "Terminal update", "Copy the manual reinstall command. Linked dev checkouts are not overwritten.",
+		c.button("Copy command", "update-copy", {size = "sm", icon = "copy", focused = f == "update-copy", title = snapshot.command})))
+	return ui.el("div", {key = "updates", class = "tp-card"}, rows)
+end
 local function settings_view(s: any): any
 	local f = s.settings_focus
 	local default = s.settings.default_harness
@@ -1425,6 +1523,8 @@ local function settings_view(s: any): any
 			setting_row("refresh", f == "refresh", "Chat index", index_desc,
 				c.button(if s.indexing then "Refreshing…" else "Refresh", "refresh", {size = "sm", icon = "redo", disabled = s.indexing, focused = f == "refresh"})),
 		}),
+		ui.el("div", {class = "tp-sec-t", text = "Plugin updates"}),
+		updates_view(s),
 		ui.el("div", {class = "tp-sec-t", text = "Keyboard"}),
 		ui.el("div", {class = "tp-card tp-keys"}, keys),
 	})
@@ -1475,13 +1575,14 @@ local function dock_view(s: any): any?
 end
 local function confirm_view(s: any): any
 	local conf = s.confirm
+	local busy = s.busy and conf.kind ~= "update"
 	local buttons = {}
 	for i, b in conf.buttons do
 		if i == 2 then table.insert(buttons, c.grow()) end
-		table.insert(buttons, c.button(if s.busy then (if b.id == "cancel" then "Hide" else s.busy_label or "Working…") else b.label, "confirm=" .. b.id, {key = b.id, variant = if b.id == "cancel" then "ghost" else b.variant, focused = conf.focus == i, disabled = b.disabled or (s.busy and b.id ~= "cancel")}))
+		table.insert(buttons, c.button(if busy then (if b.id == "cancel" then "Hide" else s.busy_label or "Working…") else b.label, "confirm=" .. b.id, {key = b.id, variant = if b.id == "cancel" then "ghost" else b.variant, focused = conf.focus == i, disabled = b.disabled or (busy and b.id ~= "cancel")}))
 	end
 	local body = table.clone(conf.body)
-	if s.busy then table.insert(body, ui.el("div", {class = "tp-loading"}, {ui.node("spinner", {style = "ring"}), ui.el("span", {text = (s.busy_label or "Working…") .. " You can hide this dialog; the change will continue."})})) end
+	if busy then table.insert(body, ui.el("div", {class = "tp-loading"}, {ui.node("spinner", {style = "ring"}), ui.el("span", {text = (s.busy_label or "Working…") .. " You can hide this dialog; the change will continue."})})) end
 	if conf.error then table.insert(body, c.banner("op-error", "error", "warn", conf.error)) end
 	return ui.node("overlay", {key = "confirm:" .. conf.kind, modal = true, size = "sm", head = conf.title, role = "tern-projects.dialog"}, {
 		ui.el("div", {key = "body", class = "tp-form"}, body),
@@ -1536,6 +1637,18 @@ local panel: BlockDef<any> = {
 			if type(saved.query) == "string" then tf.set(s.query, saved.query) end
 		end
 		pcall(tern.fs.write, tern.plugin.data .. "/panel-cols", tostring(cx.cols))
+		s.update_snapshot = updates.get()
+		s.update_unsubscribe = updates.subscribe(function()
+			if not live(s) then return end
+			s.update_snapshot = updates.get()
+			local conf, snapshot = s.confirm, s.update_snapshot
+			if conf and conf.kind == "update" and (snapshot.status ~= "available" or snapshot.latest_version ~= conf.version or snapshot.install_blocked) then
+				conf.buttons[2].disabled = true
+				conf.focus = 1
+				conf.error = "The available update changed. Cancel and review the latest version before installing."
+			end
+			s.cx:render()
+		end)
 		rebuild(s)
 		refresh(s)
 		local function tick()
@@ -1552,6 +1665,10 @@ local panel: BlockDef<any> = {
 		-- `cx.cols` is a placeholder until the pane reports a resize; only trust reported widths.
 		local cols = s.cols or 44
 		local children: {any} = {nav_view(s, cols < 48)}
+		local snapshot = s.update_snapshot
+		if s.mode ~= "settings" and snapshot.status == "available" then
+			table.insert(children, c.banner("update-available", "info", nil, "Projects " .. snapshot.latest_version .. " is available.", {c.button("Review", "update-review", {size = "xs"})}))
+		end
 		local building = cli.status()
 		if building then
 			table.insert(children, c.banner("building", "info", nil, building .. " This runs once after installing or updating and can take a few minutes.", nil, true))
@@ -1582,7 +1699,7 @@ local panel: BlockDef<any> = {
 	end,
 	key = function(s, k, _cx)
 		if k.name == "escape" and s.launch_pending then action(s, "cancel-launch", nil); return true end
-		if s.busy then if k.name == "escape" then hide_busy(s) end; return true end
+		if s.busy and not (s.confirm and s.confirm.kind == "update") then if k.name == "escape" then hide_busy(s) end; return true end
 		if s.editor then
 			local d = s.editor
 			if d.browser then

@@ -4,6 +4,11 @@ All notable changes to `tern-projects` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Plugin update checks**: checks the official stable manifest version at startup when due and every 24 hours, with a persistent opt-out, Check now, and available-update notice.
+- **Consent-based installation**: Settings shows installed/latest versions, offers Cancel-first installation review, and always provides the README's manual command. Installation uses Tern's supported installer, verifies the resulting version from disk, recovers status after plugin reload, and never overwrites a linked checkout.
+- **Deletion-safe updates**: the in-app installer and permanent chat deletion exclude one another, including deletion requests queued during an installation. Checks remain independent of the Rust backend.
+
 ### Fixed
 - **OMP permanent deletion**: removes prompt history attributed to the selected session and verified owned dependents, while preserving other sessions and unattributed prompts. Unsupported schemas, trigger side effects, ambiguous identities, busy stores, and stale confirmations refuse before source removal; SQL statement failures roll back before unlinking transcripts.
 - **Projects commands and New chat on Tern 0.9.5**: `Projects`, `Projects: Search` and `Projects: Settings` now open the panel, and **New chat** opens its tab. Tern 0.9.5's `cx.session:pane(id)` and `cx.layout:split(id, …)` can return nil for a live pane id, so the window now looks panes up through `cx.session:panes()` and opens the panel with `cx:new_block(…, "split")` when `split` finds no target.

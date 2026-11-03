@@ -24,10 +24,20 @@ tern plugin install github.com/thegeneralist01/tern-projects
 
 That's it. Tern fetches the plugin, and the background engine builds automatically on first load. No manual compile steps, no extra configuration.
 
-To update later:
+### Updates
+
+Projects checks the official GitHub repository at startup when its last check is at least 24 hours old, then daily while Tern is running. Checks compare stable versions in `plugin.toml`; they do not install anything automatically. Disable **Automatic checks**, or use **Check now**, under **Settings → Plugin updates**.
+
+When a newer version is available, choose **Review…** and explicitly confirm **Install update**. Tern installs the latest official `main` branch and reloads the plugin; open Projects panes may close. The version shown is the last checked version, not a pinned download.
+
+For a manual update, run:
 ```sh
 tern plugin install github.com/thegeneralist01/tern-projects --force
 ```
+
+**Copy command** in Plugin updates copies that same command, including when a network check or installation fails. Tern's installer replaces plugin files, not your project library or plugin data; the history index remains a rebuildable cache. Tern refuses to overwrite linked development checkouts, so update the linked checkout instead.
+
+The in-app installer refuses to run while permanent chat deletion is active, and deletion cannot start during installation. Wait for deletion to finish before running the manual command too.
 
 ---
 
