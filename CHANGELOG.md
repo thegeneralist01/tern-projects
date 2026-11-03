@@ -2,7 +2,7 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
-## [Unreleased]
+## [0.2.5] — 2026-11-03
 
 ### Fixed
 - **macOS backend builds**: use the selected Apple SDK and compiler/linker together. An older linker inherited through `PATH` can otherwise fail on newer Command Line Tools SDK architecture entries even when Rust and Cargo are installed.
