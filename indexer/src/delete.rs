@@ -95,7 +95,13 @@ pub fn execute(
     let _library = crate::library::Library::open(db_path)?;
     // Enumerating and validating the complete operation precedes the first source write.
     match &plan.operation {
-        Operation::Files(p) => files::execute(p)?,
+        Operation::Files(p) => files::execute(p, || {
+            ensure!(
+                token(&chat, &plan)? == expected_version,
+                "Chat or owned source data changed while acquiring the history lock; obtain a fresh deletion preview"
+            );
+            Ok(())
+        })?,
         Operation::Cursor(p) => cursor::execute(p)?,
         Operation::Native(p) => native::execute(home, p)?,
     }
@@ -170,8 +176,12 @@ fn validate_cached_dependents(db_path: &Path, chat: &Chat, plan: &Plan) -> Resul
 }
 
 fn token(chat: &Chat, plan: &Plan) -> Result<String> {
-    let mut stamps = Vec::with_capacity(plan.stamps.len());
-    for p in &plan.stamps {
+    let mut history_paths = BTreeSet::new();
+    if let Operation::Files(p) = &plan.operation {
+        files::history_stamps(p, &mut history_paths)?;
+    }
+    let mut stamps = Vec::with_capacity(plan.stamps.len() + history_paths.len());
+    for p in plan.stamps.union(&history_paths) {
         let m =
             std::fs::symlink_metadata(p).with_context(|| format!("Inspecting {}", p.display()))?;
         ensure!(

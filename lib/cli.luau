@@ -12,12 +12,12 @@ end
 -- Spawn the binary with `args` prepended by `{bin, "--db", db}`.
 -- Decodes stdout as JSON and calls cb(data, nil) on success,
 -- or cb(nil, errmsg) on non-zero exit, decode failure, timeout, or a spawn that
--- never started. Each request reports exactly once, and a queued request whose
--- caller stopped caring (`should_start`) never starts a process.
+-- never started. Active requests report exactly once; cancelled callers neither
+-- start queued processes nor receive late results.
 local function spawn(args: { string }, timeout_ms: number, stdin: string?, cb: (data: any?, err: string?) -> (), should_start: (() -> boolean)?)
 	backend.ensure(function(b, buildErr)
-		if not b then cb(nil, buildErr); return end
 		if should_start and not should_start() then return end
+		if not b then cb(nil, buildErr); return end
 		local argv: { string } = { b, "--db", cli.db() }
 		for _, a in args do
 			table.insert(argv, a)
@@ -26,10 +26,12 @@ local function spawn(args: { string }, timeout_ms: number, stdin: string?, cb: (
 		local function finish(data: any?, err: string?)
 			if finished then return end
 			finished = true
+			if should_start and not should_start() then return end
 			cb(data, err)
 		end
 		local started, startErr = pcall((tern :: any).process.run, argv, { timeout_ms = timeout_ms, stdin = stdin }, function(result: any, _cx: any?)
 			if finished then return end
+			if should_start and not should_start() then finished = true; return end
 			if result.timed_out then
 				finish(nil, "timed out")
 				return

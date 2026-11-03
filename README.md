@@ -81,11 +81,13 @@ Inside any text field, standard terminal editing shortcuts just work (`⌘A`/`Ct
 
 OMP keeps one history entry per distinct prompt and associates it with the most recent session that used it. Deleting a chat removes entries currently attributed to that session; entries attributed to another session or with no recorded session are retained.
 
+Permanent deletion refuses unknown history schemas or triggers, ambiguous source identities, busy stores, and stale confirmations. History cleanup is checked under a write transaction before transcripts are removed; unrelated chats, unattributed prompt history, and project files are retained. Filesystem removal and SQLite commit are not crash-atomic: a process crash or later filesystem/commit failure can leave partial cleanup. Such failures are reported, and the plugin does not automatically retry.
+
 ---
 
 ## How It Works
 
-- **Non-destructive**: Your original git worktrees, folders, and transcripts are never touched or rearranged.
+- **Read-only indexing**: indexing and search never alter project files or original transcripts. Only explicitly confirmed permanent chat deletion removes verified harness-owned data.
 - **Fast SQLite FTS**: Full-text indexing runs in a separate local SQLite database (`index.sqlite`), refreshing in the background every two minutes.
 - **Durable Library**: Your custom projects, icons, pins, and preferences are stored in an independent `library.sqlite` so reindexing the cache never wipes your setup.
 

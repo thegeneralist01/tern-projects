@@ -14,12 +14,21 @@ local SEARCH_PAGE = 50
 local NAME_FIELD = "layer.editor.form.name"
 local SEARCH_FIELD = "main.searchbox.query"
 local NULL = (tern.json :: any).null
+local LAUNCH_CLAIM_LIFETIME = 10 -- seconds; window.luau rejects claims outside the same bound
+local launch_nonce = 0
+local cancel_flow: (any) -> ()
 
 local function pane_alive(id: number): boolean
 	for _, p in tern.pane.list() do if p.pane == id then return true end end
 	return false
 end
-local function live(s: any): boolean return s.alive and pane_alive(s.cx.pane) end
+local function live(s: any): boolean
+	if not s.alive then return false end
+	if pane_alive(s.cx.pane) then return true end
+	s.alive = false
+	cancel_flow(s)
+	return false
+end
 local function toast(s: any, level: any, text: string, sub: string?) s.cx:toast(level, text, sub) end
 local function project_key(s: any, p: any): string return if s.view == "mine" then "project:" .. tostring(p.id) else "discovered:" .. tostring(p.root) end
 local function project_name(p: any): string return p.name or p.label or fmt.basename(p.root or "") end
@@ -114,10 +123,17 @@ end
 local reload: (any) -> ()
 local action: (any, string, string?) -> ()
 local end_launch_wait: (any) -> ()
-local cancel_flow: (any) -> ()
 
 -- Launch waiting: New chat reports a stage and a deadline instead of going quiet ------
 local LAUNCH_TIMEOUT = {["launch-plan"] = 15000, harnesses = 65000}
+
+local function clear_launch_claim(s: any)
+	local claim = s.launch_claim
+	s.launch_claim = nil
+	if not claim then return end
+	if claim.timer then pcall(function() claim.timer:cancel() end) end
+	pcall(tern.kv.set, claim.key, nil)
+end
 
 end_launch_wait = function(s: any)
 	for _, timer in s.launch_timers or {} do pcall(function() timer:cancel() end) end
@@ -136,6 +152,7 @@ cancel_flow = function(s: any)
 	s.flow = (s.flow or 0) + 1
 	s.picker = nil; s.menu = nil; s.confirm = nil; s.pending_plan = nil
 	end_launch_wait(s)
+	clear_launch_claim(s)
 end
 
 -- A picker names its own stage; the panel banner names the launch itself.
@@ -175,8 +192,12 @@ local function begin_launch_wait(s: any, phase: string)
 			local p = s.picker
 			local text = launch_timeout_text()
 			cancel_flow(s)
-			-- A picker stays open on the failure, so another tool remains reachable.
-			if p then p.state = "error"; p.message = text; s.picker = p; picker.settle(p)
+			-- Verified tools remain actionable after a plan timeout; survey seeds never do.
+			if p then
+				p.state = if p.data and p.data.verified then "ready" else "error"
+				p.message = text
+				for _, a in p.actions do if a.id == "retry-harnesses" then a.disabled = false end end
+				s.picker = p; picker.settle(p)
 			else s.error = text; s.error_reload = false end
 			toast(s, "error", "Couldn't prepare new chat", text)
 			s.cx:render()
@@ -464,7 +485,7 @@ end
 -- Pickers --------------------------------------------------------------------------------
 
 local function open_picker(s: any, spec: any)
-	s.menu = nil; s.confirm = nil
+	cancel_flow(s)
 	s.picker = picker.new(spec)
 	s.cx:frame({{"focus", NULL}})
 end
@@ -523,8 +544,8 @@ harness_picker = function(s: any, purpose: string)
 	local seeds = {}
 	if is_default then table.insert(seeds, {id = "ask", label = "Ask every time", icon = "help", disabled = true}) end
 	for _, id in {"omp", "claude", "codex", "pi", "opencode", "cursor"} do table.insert(seeds, {id = id, label = fmt.agent_label(id), icon = fmt.agent_icon(id), disabled = true}) end
-	local actions = {{id = "close", label = "Cancel", keys = {"esc"}}, {id = "choose", label = if is_default then "Use as default" else "Start chat", keys = {"enter"}, primary = true}}
-	if not is_default then table.insert(actions, {id = "choose-default", label = "Start & set default", keys = {if tern.runtime.os == "macos" then "cmd+enter" else "ctrl+enter"}, ["end"] = true}) end
+	local actions = {{id = "close", label = "Cancel", keys = {"esc"}}, {id = "retry-harnesses", label = "Retry tool check", keys = {"ctrl+r"}, disabled = true}, {id = "choose", label = if is_default then "Use as default" else "Start chat", keys = {"enter"}, primary = true}}
+	if not is_default then table.insert(actions, {id = "choose-default", label = "Start & set default", keys = {if tern.runtime.os == "macos" then "cmd+enter" else "ctrl+enter"}, disabled = true, ["end"] = true}) end
 	open_picker(s, {
 		kind = if is_default then "default-harness" else "harness",
 		title = if is_default then "Default harness" else "New chat",
@@ -536,6 +557,7 @@ harness_picker = function(s: any, purpose: string)
 		items = seeds,
 		current = if is_default then {if type(default) == "string" then default else "ask"} else {},
 		actions = actions,
+		data = {purpose = purpose, verified = false},
 	})
 	local p = s.picker
 	if not is_default and s.default_unavailable then p.subtitle = s.default_unavailable end
@@ -544,9 +566,11 @@ harness_picker = function(s: any, purpose: string)
 		if s.picker ~= p then return end
 		end_launch_wait(s)
 		local items = {}
+		local installed = false
 		if is_default then table.insert(items, {id = "ask", label = "Ask every time", detail = "Choose a harness for each new chat", icon = "help"}) end
 		local folders = s.launch_target and s.launch_target.folders or 1
 		for _, h in data.harnesses or {} do
+			if h.installed then installed = true end
 			local badges = {}
 			if h.id == default then table.insert(badges, {text = "Default", tone = "accent"}) end
 			local capability = if h.multi_root then fmt.plural(folders, "folder") else "Primary folder only"
@@ -561,7 +585,8 @@ harness_picker = function(s: any, purpose: string)
 				badges = badges,
 			})
 		end
-		p.items = items; p.state = "ready"
+		p.items = items; p.state = "ready"; p.data.verified = true
+		for _, a in p.actions do if a.id == "choose-default" then a.disabled = not installed end end
 		if is_default then
 			p.selected = if type(default) == "string" then default else "ask"
 		else
@@ -576,6 +601,7 @@ harness_picker = function(s: any, purpose: string)
 		if s.picker == p then
 			end_launch_wait(s)
 			p.state = "error"; p.message = fmt.error(err)
+			for _, a in p.actions do if a.id == "retry-harnesses" then a.disabled = false end end
 		end
 	end)
 end
@@ -609,13 +635,27 @@ end
 -- Launching ------------------------------------------------------------------------------
 
 local function launch_route(s: any, plan: any)
-	if type(plan.cwd) ~= "string" or type(plan.command) ~= "string" or plan.command == "" then s.error = "The launch plan was incomplete."; return end
-	s.picker = nil; s.confirm = nil
-	-- A window attributes the link to whichever pane is focused when it opens. The nonce lets
-	-- the route tell our own launch (which may have lost focus) from text that merely looks like one.
-	local nonce = tostring(tern.now()) .. "-" .. tostring(s.cx.pane)
-	tern.kv.set("launch", {nonce = nonce, pane = s.cx.pane})
-	s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
+	if not live(s) then return end
+	if type(plan.cwd) ~= "string" or plan.cwd == "" or type(plan.command) ~= "string" or plan.command == "" or string.find(plan.cwd, "[%z\r\n]") or string.find(plan.command, "[%z\r\n]") then s.error = "The launch plan was incomplete."; return end
+	clear_launch_claim(s)
+	launch_nonce += 1
+	local created = os.time()
+	local nonce = tostring(created) .. "-" .. tostring(tern.now()) .. "-" .. tostring(s.cx.pane) .. "-" .. tostring(launch_nonce)
+	local key = "launch:" .. nonce
+	local ok, err = pcall(tern.kv.set, key, {pane = s.cx.pane, cwd = plan.cwd, command = plan.command, created = created})
+	if not ok then s.error = "Cannot authorize chat launch: " .. tostring(err); return end
+	-- Each request owns its own short-lived, payload-bound key. A different window cannot
+	-- overwrite it, and the route must consume it before creating a tab.
+	local claim: any = {key = key}
+	s.launch_claim = claim
+	claim.timer = tern.timer(LAUNCH_CLAIM_LIFETIME * 1000, function()
+		if s.launch_claim == claim then clear_launch_claim(s) end
+	end)
+	s.picker = nil; s.confirm = nil; s.pending_plan = nil
+	local opened, failure = pcall(function()
+		s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
+	end)
+	if not opened then clear_launch_claim(s); s.error = "Cannot open chat launch: " .. tostring(failure) end
 end
 launch_plan = function(s: any, harness: string, from_default: boolean)
 	local target = s.launch_target
@@ -767,6 +807,7 @@ local MENU_META: {[string]: any} = {
 }
 local function open_menu(s: any, key: string?)
 	key = key or s.sel
+	cancel_flow(s)
 	if not key or not s.rows[key] or (s.rows[key].kind ~= "session" and s.rows[key].kind ~= "project") then
 		local ids = if s.mode == "search" then {"scope=workspace", "scope=repository", "scope=all", "-", "filter", "filter-project=all", "-", "sort=updated", "sort=relevance"} else {"new-chat", "new-chat-with…", "create", "-", "refresh"}
 		s.menu = {ids = ids, selected = ids[1], title = if s.mode == "search" then "Search options" else "Projects"}
@@ -775,18 +816,18 @@ local function open_menu(s: any, key: string?)
 	local row = s.rows[key]
 	if not row or (row.kind ~= "session" and row.kind ~= "project") then return end
 	local ids = menu_entries(s, key)
-	s.picker = nil; s.confirm = nil
 	s.sel = key
 	s.menu = {target = key, ids = ids, selected = ids[1]}
 end
 local function confirm_remove(s: any, p: any)
+	cancel_flow(s)
 	s.remove_id = tostring(p.id)
 	s.confirm = {kind = "remove", title = "Remove “" .. project_name(p) .. "”?", body = {
 		c.note("The project is removed from your sidebar. Chats and source folders will not be deleted. Chats you moved here go back to matching by folder."),
 	}, buttons = {{id = "cancel", label = "Cancel"}, {id = "remove-confirm", label = "Remove project", variant = "danger"}}, focus = 1}
 end
 local function confirm_delete(s: any, chat: any)
-	s.menu = nil; s.picker = nil
+	cancel_flow(s)
 	s.delete_preview = nil
 	local function header(): any
 		return ui.el("div", {class = "tp-subject"}, {
@@ -907,6 +948,10 @@ local function picker_action(s: any, act: string?)
 		if p.query then tf.set(p.query, ""); p.query_all = false; picker.settle(p) end
 		return
 	end
+	if act == "retry-harnesses" and (p.kind == "harness" or p.kind == "default-harness") then
+		harness_picker(s, p.data.purpose)
+		return
+	end
 	local it = picker.selected_item(p)
 	if p.kind == "harness" then
 		if (act == "choose" or act == "choose-default") and it and not it.disabled and p.state == "ready" then
@@ -919,7 +964,7 @@ local function picker_action(s: any, act: string?)
 			else launch_plan(s, it.id, false) end
 		end
 	elseif p.kind == "default-harness" then
-		if act == "choose" and it and not it.disabled then
+		if act == "choose" and it and not it.disabled and p.state == "ready" then
 			if table.find(p.current, it.id) then cancel_flow(s); return end
 			local value = if it.id == "ask" then NULL else it.id
 			mutate(s, {op = "settings-update", default_harness = value}, function() s.picker = nil; toast(s, "success", if it.id == "ask" then "New chat will ask for a harness" else "New chat uses " .. it.label) end)
@@ -1536,6 +1581,7 @@ local panel: BlockDef<any> = {
 		return result
 	end,
 	key = function(s, k, _cx)
+		if k.name == "escape" and s.launch_pending then action(s, "cancel-launch", nil); return true end
 		if s.busy then if k.name == "escape" then hide_busy(s) end; return true end
 		if s.editor then
 			local d = s.editor
@@ -1571,7 +1617,6 @@ local panel: BlockDef<any> = {
 		if name == "n" and (k.meta or (k.ctrl and tern.runtime.os ~= "macos")) then new_chat(s, nil, k.shift == true); return true end
 		if name == "/" and s.mode ~= "search" then change_mode(s, "search"); return true end
 		if name == "escape" and s.mode ~= "search" then
-			if s.launch_pending then cancel_flow(s); return true end
 			s.sel = nil; s.settings_focus = nil; return true
 		end
 		if s.mode == "settings" then return settings_key(s, k) end
@@ -1643,7 +1688,8 @@ local panel: BlockDef<any> = {
 			end
 		elseif name == "action" then
 			local act, value = ev.act or "", ev.value
-			if string.sub(act, 1, 5) == "open=" then
+			if act == "cancel-launch" then action(s, act, value)
+			elseif string.sub(act, 1, 5) == "open=" then
 				local payload = string.sub(act, 6)
 				local mode, cwd = string.match(payload, "^([^:]+):?(.*)")
 				if mode then s.editor = nil; cancel_flow(s); if cwd ~= "" then s.ctx_cwd = cwd end; change_mode(s, mode) end

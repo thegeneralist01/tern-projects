@@ -12,6 +12,7 @@ local pct = fmt.pct
 local KIND = "tern-projects.panel"
 local WIDTH = 44
 
+local LAUNCH_CLAIM_LIFETIME = 10 -- seconds; must match the panel's one-shot claim lifetime
 -- Per-pane state for toggle tracking.
 local last_mode: { [number]: string } = {}
 local prev_focus: { [number]: number } = {}
@@ -171,21 +172,24 @@ tern.route.link(function(link: any, cx: SessionContext)
 	if route ~= "resume" and route ~= "launch" then return nil end
 	if link.pane == nil then return { handled = true } end
 	local origin = find_pane(cx, link.pane)
-	-- The panel records its own launch: the window credits the focused pane, which is not the
-	-- panel once focus moved, so the URL alone cannot prove where it came from.
-	local nonce = unpct(string.match(q, "n=([^&]*)") or "")
-	local pending = if nonce ~= "" then tern.kv.get("launch") else nil
-	local claimed = type(pending) == "table" and pending.nonce == nonce
-	if claimed then tern.kv.set("launch", nil) end
-	if claimed then
-		if pending.pane ~= link.pane or cx.session:focused() ~= link.pane then
-			cx:toast("error", "Chat not started", "Focus the Projects panel and try again.")
-			return { handled = true }
-		end
-	elseif origin == nil or origin.block ~= KIND then
-		-- A custom URL in unrelated terminal/chat content is not a launch request.
+	local key = ""
+	local pending: any = nil
+	if route == "launch" then
+		local nonce = unpct(string.match(q, "n=([^&]*)") or "")
+		if nonce == "" then return { handled = true } end
+		key = "launch:" .. nonce
+		local ok, claim = pcall(tern.kv.get, key)
+		if not ok or type(claim) ~= "table" then return { handled = true } end
+		pending = claim
+	end
+	-- A claim never substitutes for a live Projects panel in this window. In particular,
+	-- a link credited to a newly focused pane cannot authorize a different pane's launch.
+	if origin == nil or origin.block ~= KIND or (pending and pending.pane ~= link.pane) then
+		if pending then cx:toast("error", "Chat not started", "Focus the Projects panel and try again.") end
 		return { handled = true }
-	elseif cx.session:focused() ~= link.pane then
+	end
+	if cx.session:focused() ~= link.pane then
+		if pending then cx:toast("error", "Chat not started", "Focus the Projects panel and try again.") end
 		return { handled = true }
 	end
 	if cx.hosts:current().kind ~= "local" then
@@ -197,6 +201,20 @@ tern.route.link(function(link: any, cx: SessionContext)
 	if cmd == "" or cwd == "" or string.find(cwd, "[%z\r\n]") or string.find(cmd, "[%z\r\n]") then
 		cx:toast("error", "Invalid chat launch", "The working directory or command is missing or invalid.")
 		return { handled = true }
+	end
+	if pending then
+		local created = pending.created
+		local age = if type(created) == "number" then os.time() - created else LAUNCH_CLAIM_LIFETIME
+		if age < 0 or age >= LAUNCH_CLAIM_LIFETIME or pending.cwd ~= cwd or pending.command ~= cmd then
+			return { handled = true }
+		end
+		-- Only the matching, authorized window consumes this nonce. Reject replay even
+		-- when tab creation fails, and fail closed if removing the claim fails.
+		local consumed = pcall(tern.kv.set, key, nil)
+		if not consumed then
+			cx:toast("error", "Chat not started", "Cannot consume the chat launch authorization. Try again.")
+			return { handled = true }
+		end
 	end
 	local ok, pane = pcall(function()
 		return cx.layout:new_tab({ cwd = cwd, command = cmd })

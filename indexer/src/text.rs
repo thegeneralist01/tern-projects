@@ -183,12 +183,23 @@ fn days_from_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
 pub fn plain_path(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
-        let text = path.to_string_lossy();
+        // Preserve unrepresentable paths so callers can reject them, never redirect
+        // them to a different directory through replacement characters.
+        let Some(text) = path.to_str() else {
+            return path;
+        };
         if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
             return PathBuf::from(format!(r"\\{rest}"));
         }
         if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
+            let bytes = rest.as_bytes();
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\'
+            {
+                return PathBuf::from(rest);
+            }
         }
     }
     path
@@ -276,5 +287,20 @@ mod tests {
             PathBuf::from(r"\\server\share\x")
         );
         assert_eq!(plain_path(PathBuf::from(r"D:\already\plain")), PathBuf::from(r"D:\already\plain"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_path_preserves_unsupported_and_non_unicode_paths() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+
+        let device = PathBuf::from(r"\\?\Volume{1234}\project");
+        assert_eq!(plain_path(device.clone()), device);
+
+        let mut units: Vec<u16> = r"\\?\C:\project-".encode_utf16().collect();
+        units.push(0xD800);
+        let path = PathBuf::from(OsString::from_wide(&units));
+        assert_eq!(plain_path(path.clone()), path);
     }
 }

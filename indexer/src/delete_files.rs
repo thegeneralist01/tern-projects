@@ -9,7 +9,7 @@ pub(super) struct Plan {
     history_db: Option<PathBuf>,
     history_tables: Vec<&'static str>,
     history_fts: bool,
-    id: String,
+    ids: Vec<String>,
 }
 
 pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
@@ -48,7 +48,7 @@ pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
         history_db: None,
         history_tables: vec![],
         history_fts: false,
-        id: chat.id.clone(),
+        ids: vec![],
     };
     let mut stamps = BTreeSet::new();
     inventory(&root, &source, &mut stamps)?;
@@ -84,42 +84,10 @@ pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
             add_optional_removal(&mut p, backup, &mut stamps)?;
         }
         let db_path = root.join("history.db");
-        if db_path.try_exists()? {
-            add_database(&root, &db_path, &mut stamps)?;
+        if db_path.try_exists()? || db_path.is_symlink() {
+            add_history_database(&root, &db_path, &mut stamps)?;
             let conn = crate::db::open_readonly(&db_path)?;
-            for table in ["history", "session_titles", "session_recaps"] {
-                if table_exists(&conn, table)? {
-                    // Preparing verifies the required column before the first unlink.
-                    conn.prepare(&format!("SELECT session_id FROM {table} LIMIT 0"))?;
-                    p.history_tables.push(table);
-                }
-            }
-            if table_exists(&conn, "history_fts")? {
-                ensure!(p.history_tables.contains(&"history"), "OMP history_fts has no history table");
-                let sql: String = conn.query_row(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='history_fts'",
-                    [],
-                    |row| row.get(0),
-                )?;
-                let schema: String = sql
-                    .chars()
-                    .filter(|c| !c.is_ascii_whitespace() && !['\'', '"', '`', '[', ']'].contains(c))
-                    .map(|c| c.to_ascii_lowercase())
-                    .collect();
-                let options = schema
-                    .strip_prefix("createvirtualtablehistory_ftsusingfts5(")
-                    .and_then(|s| s.strip_suffix(')'))
-                    .context("Unsupported OMP history_fts schema")?;
-                ensure!(
-                    ["prompt", "content=history", "content_rowid=id"]
-                        .iter()
-                        .all(|expected| options.split(',').any(|option| option == *expected)),
-                    "Unsupported OMP history_fts schema"
-                );
-                conn.prepare("SELECT id, prompt FROM history LIMIT 0")?;
-                conn.prepare("SELECT rowid, prompt FROM history_fts LIMIT 0")?;
-                p.history_fts = true;
-            }
+            (p.history_tables, p.history_fts) = validate_history_schema(&conn)?;
             p.history_db = Some(db_path);
         }
     } else if chat.agent == "claude" {
@@ -177,13 +145,6 @@ pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
             .iter()
             .map(|(p, _)| format!("{} (remove exact sessionId records)", p.display())),
     );
-    if let Some(db) = &p.history_db {
-        targets.extend(
-            p.history_tables
-                .iter()
-                .map(|table| format!("{}: {table}[session_id={}]", db.display(), chat.id)),
-        );
-    }
     let mut ids = vec![chat.id.clone()];
     // Child transcript headers are read only inside an owned artifacts directory, never elsewhere.
     if chat.agent != "pi" {
@@ -195,43 +156,90 @@ pub(super) fn prepare(home: &Path, chat: &Chat) -> Result<super::Plan> {
             if owned_child && path.extension().is_some_and(|e| e == "jsonl") && path.is_file() {
                 targets.push(path.to_string_lossy().into_owned());
                 let content = std::fs::read_to_string(path)?;
-                for line in content.lines().filter(|s| !s.trim().is_empty()) {
-                    let Ok(v) = serde_json::from_str::<Value>(line) else {
-                        continue;
-                    };
-                    let id = if chat.agent == "omp" {
-                        if v.get("type").and_then(Value::as_str) == Some("session") {
-                            v.get("id").and_then(Value::as_str)
-                        } else {
-                            None
+                if chat.agent == "omp" {
+                    let id = omp_session_id(&content)?;
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                } else {
+                    for line in content.lines().filter(|s| !s.trim().is_empty()) {
+                        let Ok(v) = serde_json::from_str::<Value>(line) else {
+                            continue;
+                        };
+                        if let Some(id) = v.get("sessionId").and_then(Value::as_str) {
+                            valid_id(id)?;
+                            if !ids.iter().any(|s| s == id) {
+                                ids.push(id.to_string());
+                            }
+                            break;
                         }
-                    } else {
-                        v.get("sessionId").and_then(Value::as_str)
-                    };
-                    if let Some(id) = id {
-                        valid_id(id)?;
-                        if !ids.iter().any(|s| s == id) {
-                            ids.push(id.to_string());
-                        }
-                        break;
                     }
                 }
             }
         }
     }
     ids.sort();
+    if let Some(db) = &p.history_db {
+        for table in &p.history_tables {
+            for id in &ids {
+                targets.push(format!("{}: {table}[session_id={id}]", db.display()));
+            }
+        }
+    }
+    p.ids = ids.clone();
     p.directories = p
         .removals
         .iter()
         .filter(|path| path.is_dir())
         .cloned()
         .collect();
+    if chat.agent == "omp" && ids.len() > 1 {
+        validate_dependent_inventory(&p, &sessions, &chat.id, &mut stamps)?;
+    }
     Ok(super::Plan {
         operation: Operation::Files(p),
         targets,
         ids,
         stamps,
     })
+}
+
+// Child attribution is not proved by the disposable index alone: an unindexed
+// transcript elsewhere in this bounded source tree may reuse the same ID.
+fn validate_dependent_inventory(
+    p: &Plan,
+    path: &Path,
+    target: &str,
+    stamps: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    if p.removals.iter().any(|owned| path == owned)
+        || p.directories.iter().any(|owned| path.starts_with(owned))
+    {
+        return Ok(());
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "Unverifiable OMP dependent inventory symlink: {}",
+        path.display()
+    );
+    if metadata.is_dir() {
+        safe_path(&p.root, path, true)?;
+        stamps.insert(path.to_path_buf());
+        for entry in std::fs::read_dir(path)? {
+            validate_dependent_inventory(p, &entry?.path(), target, stamps)?;
+        }
+    } else if path.extension().is_some_and(|extension| extension == "jsonl") {
+        safe_path(&p.root, path, false)?;
+        stamps.insert(path.to_path_buf());
+        let id = omp_session_id(&std::fs::read_to_string(path)?)?;
+        ensure!(
+            id == target || !p.ids.contains(&id),
+            "Ambiguous child-session identity: {id} also exists outside the owned deletion targets at {}; refusing deletion",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn owns_source(plan: &Plan, agent: &str, source: &str) -> bool {
@@ -305,16 +313,14 @@ fn validate_header(text: &str, chat: &Chat) -> Result<()> {
             }
         }
         ensure!(found, "Claude transcript has no verifiable sessionId");
+    } else if chat.agent == "omp" {
+        ensure!(
+            omp_session_id(text)? == chat.id,
+            "Session header ID does not match indexed chat"
+        );
     } else {
-        let mut first: Value =
+        let first: Value =
             serde_json::from_str(lines.next().context("Empty session transcript")?)?;
-        if chat.agent == "omp" && first.get("type").and_then(Value::as_str) == Some("title") {
-            first = serde_json::from_str(
-                lines
-                    .next()
-                    .context("OMP title slot is not followed by a session header")?,
-            )?;
-        }
         ensure!(
             first.get("type").and_then(Value::as_str) == Some("session")
                 && first.get("id").and_then(Value::as_str) == Some(chat.id.as_str()),
@@ -322,6 +328,32 @@ fn validate_header(text: &str, chat: &Chat) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn omp_session_id(text: &str) -> Result<String> {
+    let mut lines = text.lines().filter(|s| !s.trim().is_empty());
+    let mut header: Value = serde_json::from_str(lines.next().context("Empty OMP transcript")?)?;
+    if header.get("type").and_then(Value::as_str) == Some("title") {
+        header = serde_json::from_str(
+            lines.next().context("OMP title slot is not followed by a session header")?,
+        )?;
+    }
+    ensure!(
+        header.get("type").and_then(Value::as_str) == Some("session"),
+        "OMP transcript has no verifiable session header"
+    );
+    let id = header.get("id").and_then(Value::as_str).context("OMP transcript has no session ID")?;
+    valid_id(id)?;
+    for line in lines {
+        let record: Value = serde_json::from_str(line).context("Malformed OMP transcript; refusing deletion")?;
+        if record.get("type").and_then(Value::as_str) == Some("session") {
+            ensure!(
+                record.get("id").and_then(Value::as_str) == Some(id),
+                "OMP transcript contains conflicting session IDs"
+            );
+        }
+    }
+    Ok(id.to_string())
 }
 
 fn add_optional_removal(p: &mut Plan, path: PathBuf, stamps: &mut BTreeSet<PathBuf>) -> Result<()> {
@@ -344,7 +376,173 @@ fn add_optional_removal(p: &mut Plan, path: PathBuf, stamps: &mut BTreeSet<PathB
     Ok(())
 }
 
-pub(super) fn execute(p: &Plan) -> Result<()> {
+// Deliberately recognize only verified SQL shapes. In particular, removing quotes
+// from string literals would incorrectly equate different content-store ownership.
+fn normalized_sql(sql: &str) -> String {
+    let mut quoted = false;
+    let mut normalized = sql.chars()
+        .filter_map(|c| {
+            if c == '\'' {
+                quoted = !quoted;
+                Some(c)
+            } else if quoted {
+                Some(c)
+            } else if c.is_ascii_whitespace() {
+                None
+            } else {
+                Some(c.to_ascii_lowercase())
+            }
+        })
+        .collect::<String>();
+    while normalized.ends_with(';') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn validate_history_schema(conn: &Connection) -> Result<(Vec<&'static str>, bool)> {
+    let mut tables = Vec::new();
+    for table in ["history", "session_titles", "session_recaps"] {
+        if !table_exists(conn, table)? {
+            continue;
+        }
+        let sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            normalized_sql(&sql).starts_with(&format!("createtable{table}(")),
+            "Unsupported OMP {table} table schema"
+        );
+        let columns = conn.prepare(&format!("PRAGMA table_xinfo({table})"))?
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+                    r.get::<_, i64>(5)?, r.get::<_, i64>(6)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        ensure!(
+            columns.iter().any(|(name, ty, _, hidden)|
+                name == "session_id" && ty.eq_ignore_ascii_case("TEXT") && *hidden == 0),
+            "Unsupported OMP {table} session_id ownership column"
+        );
+        if table == "history" {
+            ensure!(
+                columns.iter().any(|(name, ty, pk, hidden)|
+                    name == "id" && ty.eq_ignore_ascii_case("INTEGER") && *pk == 1 && *hidden == 0)
+                    && columns.iter().any(|(name, ty, _, hidden)|
+                        name == "prompt" && ty.eq_ignore_ascii_case("TEXT") && *hidden == 0),
+                "Unsupported OMP history identity/prompt schema"
+            );
+            ensure!(
+                columns.iter().filter(|(_, _, pk, _)| *pk != 0).count() == 1,
+                "Unsupported OMP history primary key"
+            );
+            // INTEGER PRIMARY KEY must alias rowid, not a separate (e.g. DESC
+            // or WITHOUT ROWID) index that external-content FTS cannot own.
+            let separate_primary_key: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_index_list('history') WHERE origin='pk')",
+                [],
+                |r| r.get(0),
+            )?;
+            ensure!(!separate_primary_key, "OMP history IDs do not alias SQLite row ownership");
+        }
+        tables.push(table);
+    }
+    ensure!(!tables.is_empty(), "Unrecognized OMP history store ownership");
+    let fts = table_exists(conn, "history_fts")?;
+    if fts {
+        ensure!(tables.contains(&"history"), "OMP history_fts has no history table");
+        let sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='history_fts'",
+            [],
+            |r| r.get(0),
+        )?;
+        let normalized = normalized_sql(&sql);
+        let options = normalized
+            .strip_prefix("createvirtualtablehistory_ftsusingfts5(")
+            .and_then(|s| s.strip_suffix(')'))
+            .context("Unsupported OMP history_fts schema")?;
+        let mut options = options.split(',').collect::<Vec<_>>();
+        options.sort_unstable();
+        ensure!(
+            options == ["content='history'", "content_rowid='id'", "prompt"]
+                || options == ["content=history", "content_rowid=id", "prompt"],
+            "Unsupported OMP history_fts schema"
+        );
+        conn.prepare("SELECT rowid, prompt FROM history_fts LIMIT 0")?;
+    }
+    let mut statement = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'")?;
+    for table in statement.query_map([], |r| r.get::<_, String>(0))? {
+        let table = table?;
+        let sql = format!("PRAGMA foreign_key_list(\"{}\")", table.replace('"', "\"\""));
+        let mut keys = conn.prepare(&sql)?;
+        for referenced in keys.query_map([], |r| r.get::<_, String>(2))? {
+            let referenced = referenced?;
+            ensure!(
+                !tables.iter().any(|target| target.eq_ignore_ascii_case(&referenced)),
+                "Unsupported OMP history foreign-key side effects from {table}"
+            );
+        }
+    }
+    // A session_id predicate alone cannot bound trigger side effects. Unknown
+    // triggers, including those on FTS shadow tables, must refuse before unlink.
+    let mut statement = conn.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger'")?;
+    for trigger in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (name, sql) = trigger?;
+        ensure!(
+            fts && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "Unsupported OMP history trigger: {name}"
+        );
+        let prefix = format!("createtrigger{}", name.to_ascii_lowercase());
+        let normalized = normalized_sql(&sql);
+        let body = normalized.strip_prefix(&prefix)
+            .context("Unsupported OMP history trigger declaration")?;
+        ensure!(
+            matches!(body,
+                "afterinsertonhistorybegininsertintohistory_fts(rowid,prompt)values(new.id,new.prompt);end"
+                | "afterdeleteonhistorybegininsertintohistory_fts(history_fts,rowid,prompt)values('delete',old.id,old.prompt);end"
+                | "afterdeleteonhistorybegindeletefromhistory_ftswhererowid=old.id;end"),
+            "Unsupported OMP history trigger: {name}"
+        );
+    }
+    Ok((tables, fts))
+}
+
+fn add_history_database(root: &Path, path: &Path, stamps: &mut BTreeSet<PathBuf>) -> Result<()> {
+    safe_path(root, path, false)?;
+    stamps.insert(path.to_path_buf());
+    for suffix in ["-wal", "-journal"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.to_string_lossy()));
+        match std::fs::symlink_metadata(&sidecar) {
+            Ok(metadata) => {
+                safe_path(root, &sidecar, false)?;
+                // Opening a clean WAL store/BEGIN IMMEDIATE may create an empty
+                // WAL itself. It contains no committed frames to confirm.
+                if suffix != "-wal" || metadata.len() != 0 {
+                    stamps.insert(sidecar);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Include newly-created WAL/journal files when revalidating confirmation, too.
+pub(super) fn history_stamps(p: &Plan, stamps: &mut BTreeSet<PathBuf>) -> Result<()> {
+    if let Some(path) = &p.history_db {
+        add_history_database(&p.root, path, stamps)?;
+    } else if p.root.ends_with(".omp/agent")
+        && (p.root.join("history.db").try_exists()? || p.root.join("history.db").is_symlink())
+    {
+        bail!("OMP history store appeared; obtain a fresh deletion preview");
+    }
+    Ok(())
+}
+
+pub(super) fn execute(p: &Plan, revalidate: impl FnOnce() -> Result<()>) -> Result<()> {
     let mut done = Vec::new();
     let result = (|| -> Result<()> {
         // Prepare replacement files and acquire the history write lock before any source removal.
@@ -353,10 +551,13 @@ pub(super) fn execute(p: &Plan) -> Result<()> {
             prepared.push(Replacement::new(path, bytes)?);
         }
         let mut history = if let Some(path) = &p.history_db {
-            Some(Connection::open_with_flags(
+            safe_path(&p.root, path, false)?;
+            let conn = Connection::open_with_flags(
                 path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-            )?)
+            )?;
+            conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+            Some(conn)
         } else {
             None
         };
@@ -365,9 +566,23 @@ pub(super) fn execute(p: &Plan) -> Result<()> {
         } else {
             None
         };
+        // Confirmation must still match after obtaining the history write lock.
+        // No other writer can change its rows/schema between this check and our SQL.
+        revalidate()?;
         if let Some(tx) = transaction.as_ref() {
+            let (tables, fts) = validate_history_schema(tx)?;
+            ensure!(
+                tables == p.history_tables && fts == p.history_fts,
+                "OMP history schema changed; obtain a fresh deletion preview"
+            );
             for table in &p.history_tables {
-                let removed = tx.execute(&format!("DELETE FROM {table} WHERE session_id=?1"), [&p.id])?;
+                let mut removed = 0;
+                for id in &p.ids {
+                    removed += tx.execute(
+                        &format!("DELETE FROM {table} WHERE session_id COLLATE BINARY=?1"),
+                        [id],
+                    )?;
+                }
                 if *table == "history" && removed > 0 && p.history_fts {
                     // Rebuild from surviving prompts, including when the old index was inconsistent.
                     tx.execute("INSERT INTO history_fts(history_fts) VALUES('rebuild')", [])?;
@@ -438,12 +653,14 @@ pub(super) fn verify(p: &Plan) -> Result<()> {
     if let Some(db) = &p.history_db {
         let conn = crate::db::open_readonly(db)?;
         for table in &p.history_tables {
-            let count: i64 = conn.query_row(
-                &format!("SELECT count(*) FROM {table} WHERE session_id=?1"),
-                [&p.id],
-                |r| r.get(0),
-            )?;
-            ensure!(count == 0, "OMP history still contains the deleted session");
+            for id in &p.ids {
+                let count: i64 = conn.query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE session_id COLLATE BINARY=?1"),
+                    [id],
+                    |r| r.get(0),
+                )?;
+                ensure!(count == 0, "OMP history still contains a deleted session");
+            }
         }
     }
     Ok(())
@@ -493,5 +710,58 @@ impl Drop for Replacement {
         if !self.committed {
             let _ = std::fs::remove_file(&self.temporary);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_confirmation_is_revalidated_under_the_write_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".omp/agent");
+        let source = root.join("sessions/fixture/target.jsonl");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "{\"type\":\"session\",\"id\":\"target\"}\n").unwrap();
+        let bytes = std::fs::read(&source).unwrap();
+        let history = Connection::open(root.join("history.db")).unwrap();
+        history.execute_batch(
+            "CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);
+             INSERT INTO history VALUES(1,'target prompt','target');",
+        ).unwrap();
+        let chat = Chat {
+            uid: "omp:target".into(),
+            agent: "omp".into(),
+            id: "target".into(),
+            source: format!("omp:{}", source.display()),
+            title: "target".into(),
+            version: "fixture".into(),
+        };
+        let plan = prepare(home, &chat).unwrap();
+        let expected = super::super::token(&chat, &plan).unwrap();
+        // A new WAL after the first token check must be observed, even though
+        // it was absent from the original inventory.
+        history.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             INSERT INTO history VALUES(2,'neighbor prompt','neighbor');",
+        ).unwrap();
+        history.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let Operation::Files(files) = &plan.operation else { unreachable!() };
+        let mut checked = false;
+        let result = execute(files, || {
+            checked = true;
+            assert!(history.execute_batch("BEGIN IMMEDIATE").is_err(), "History write lock is not held");
+            ensure!(
+                super::super::token(&chat, &plan)? == expected,
+                "Stale confirmation"
+            );
+            Ok(())
+        });
+        assert!(checked, "Confirmation callback was never reached");
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        assert_eq!(history.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
     }
 }

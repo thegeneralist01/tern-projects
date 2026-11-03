@@ -155,7 +155,8 @@ fn omp_deletion_removes_only_owned_prompt_history_and_fts_entries() {
          CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id');
          CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN INSERT INTO history_fts(rowid, prompt) VALUES (new.id, new.prompt); END;
          INSERT INTO history(prompt, session_id) VALUES('removedneedle target prompt', 'target'), ('keepneedle neighbor prompt', 'neighbor'), ('legacyneedle unattributed prompt', NULL);
-         INSERT INTO history(prompt, session_id, use_count) VALUES('sharedneedle reused prompt', 'neighbor', 2);",
+         INSERT INTO history(prompt, session_id) VALUES('sharedneedle reused prompt', 'target');
+         INSERT INTO history(prompt, session_id) VALUES('sharedneedle reused prompt', 'neighbor') ON CONFLICT(prompt) DO UPDATE SET session_id=excluded.session_id, use_count=history.use_count+1;",
     )
     .unwrap();
     drop(conn);
@@ -288,6 +289,264 @@ fn omp_deletion_repairs_a_previously_desynchronized_history_index() {
             assert_eq!(count, expected, "history search for {term}");
         }
         conn.execute("INSERT INTO history_fts(history_fts, rank) VALUES('integrity-check', 1)", []).unwrap();
+    }
+}
+
+#[test]
+fn omp_history_without_fts_preserves_exact_neighbors_and_unattributed_prompts() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let neighbor = seed(&home, "omp", "neighbor");
+    let neighbor_bytes = std::fs::read(&neighbor).unwrap();
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT UNIQUE, session_id TEXT COLLATE NOCASE);
+         INSERT INTO history VALUES(1,'removed','target'),(2,'neighbor','neighbor'),(3,'legacy',NULL),(4,'case-sensitive neighbor','TARGET');",
+    ).unwrap();
+    drop(conn);
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    assert_eq!(library(&db, &home, deletion(&p))["ok"], true);
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(&neighbor).unwrap(), neighbor_bytes);
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    let ids: Vec<i64> = conn.prepare("SELECT id FROM history ORDER BY id").unwrap()
+        .query_map([], |r| r.get(0)).unwrap()
+        .collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(ids, [2, 3, 4]);
+}
+
+#[test]
+fn omp_unknown_history_schema_or_fts_options_refuse_without_source_changes() {
+    for schema in [
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT);",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id INTEGER);",
+        "CREATE TABLE unrelated(session_id TEXT);",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);CREATE TABLE history_fts(prompt TEXT);",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id', detail=none);",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);CREATE VIRTUAL TABLE history_fts USING fts5(prompt, extra, content='history', content_rowid='id');",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='h istory', content_rowid='id');",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY DESC, prompt TEXT, session_id TEXT);",
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);CREATE TABLE dependent(id INTEGER REFERENCES history(id) ON DELETE CASCADE);",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let db = temp.path().join("index.sqlite");
+        let target = seed(&home, "omp", "target");
+        let bytes = std::fs::read(&target).unwrap();
+        let history_path = home.join(".omp/agent/history.db");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        conn.execute_batch(schema).unwrap();
+        drop(conn);
+        index(&db, &home);
+        let before = std::fs::read(&history_path).unwrap();
+        let p = preview(&db, &home, "omp:target");
+        assert!(p["blocked_reason"].is_string(), "{schema}: {p}");
+        assert!(!call(&db, &home, deletion(&p)).status.success());
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        assert_eq!(std::fs::read(&history_path).unwrap(), before);
+    }
+}
+
+#[test]
+fn omp_unsupported_trigger_side_effects_cannot_delete_neighbor_history() {
+    for trigger in [
+        "CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN DELETE FROM history WHERE session_id='neighbor'; END;",
+        "CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN INSERT INTO history_fts(history_fts,rowid,prompt) VALUES('delete',old.id,old.prompt); DELETE FROM history WHERE session_id='neighbor'; END;",
+        "CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN DELETE FROM history_fts; END;",
+        "CREATE TRIGGER titles_ad AFTER DELETE ON session_titles BEGIN DELETE FROM history WHERE session_id='neighbor'; END;",
+        "CREATE TRIGGER shadow_ad AFTER DELETE ON history_fts_docsize BEGIN DELETE FROM history WHERE session_id='neighbor'; END;",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let db = temp.path().join("index.sqlite");
+        let target = seed(&home, "omp", "target");
+        let neighbor = seed(&home, "omp", "neighbor");
+        let target_bytes = std::fs::read(&target).unwrap();
+        let neighbor_bytes = std::fs::read(&neighbor).unwrap();
+        let history_path = home.join(".omp/agent/history.db");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);
+             CREATE TABLE session_titles(session_id TEXT PRIMARY KEY,title TEXT);
+             CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id');
+             CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN INSERT INTO history_fts(rowid,prompt) VALUES(new.id,new.prompt); END;
+             INSERT INTO history VALUES(1,'target prompt','target'),(2,'neighbor prompt','neighbor'),(3,'legacy prompt',NULL);
+             INSERT INTO session_titles VALUES('target','target title');",
+        ).unwrap();
+        conn.execute_batch(trigger).unwrap();
+        drop(conn);
+        index(&db, &home);
+        let p = preview(&db, &home, "omp:target");
+        assert!(p["blocked_reason"].is_string(), "{trigger}: {p}");
+        assert!(!call(&db, &home, deletion(&p)).status.success());
+        assert_eq!(std::fs::read(&target).unwrap(), target_bytes);
+        assert_eq!(std::fs::read(&neighbor).unwrap(), neighbor_bytes);
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert_eq!(conn.query_row("SELECT count(*) FROM session_titles", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+}
+
+#[test]
+fn omp_history_trigger_sql_failure_rolls_back_before_unlinking_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let bytes = std::fs::read(&target).unwrap();
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE history(id INTEGER PRIMARY KEY, prompt TEXT, session_id TEXT);
+         CREATE VIRTUAL TABLE history_fts USING fts5(prompt, content='history', content_rowid='id');
+         CREATE TRIGGER history_ai AFTER INSERT ON history BEGIN INSERT INTO history_fts(rowid,prompt) VALUES(new.id,new.prompt); END;
+         CREATE TRIGGER history_ad AFTER DELETE ON history BEGIN INSERT INTO history_fts(history_fts,rowid,prompt) VALUES('delete',old.id,old.prompt); END;
+         INSERT INTO history VALUES(1,'target prompt','target'),(2,'neighbor prompt','neighbor');
+         DROP TABLE history_fts_docsize;",
+    ).unwrap();
+    drop(conn);
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    let output = call(&db, &home, deletion(&p));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Permanent source cleanup failed"));
+    assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+}
+
+#[test]
+fn omp_changed_history_and_new_wal_invalidate_confirmation() {
+    for wal in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let db = temp.path().join("index.sqlite");
+        let target = seed(&home, "omp", "target");
+        let bytes = std::fs::read(&target).unwrap();
+        let history_path = home.join(".omp/agent/history.db");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        conn.execute_batch("CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);INSERT INTO history VALUES(1,'target prompt','target');").unwrap();
+        drop(conn);
+        index(&db, &home);
+        let p = preview(&db, &home, "omp:target");
+        assert!(p["blocked_reason"].is_null(), "{p}");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        if wal {
+            conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        }
+        conn.execute("INSERT INTO history VALUES(2,'new neighbor prompt','neighbor')", []).unwrap();
+        let output = call(&db, &home, deletion(&p));
+        assert!(!output.status.success());
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        assert_eq!(conn.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+}
+
+#[test]
+fn omp_busy_history_refuses_before_any_source_removal() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let bytes = std::fs::read(&target).unwrap();
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch("CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);INSERT INTO history VALUES(1,'target prompt','target');").unwrap();
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    assert!(!call(&db, &home, deletion(&p)).status.success());
+    assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    assert_eq!(conn.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    conn.execute_batch("ROLLBACK;").unwrap();
+}
+
+#[test]
+fn omp_owned_child_history_is_explicitly_attributed_and_deleted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let child = seed(&home, "omp", "child");
+    let neighbor = seed(&home, "omp", "neighbor");
+    let neighbor_bytes = std::fs::read(&neighbor).unwrap();
+    let artifacts = target.with_extension("");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    std::fs::rename(&child, artifacts.join("child.jsonl")).unwrap();
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);
+         CREATE TABLE session_titles(session_id TEXT PRIMARY KEY,title TEXT);
+         CREATE TABLE session_recaps(id INTEGER PRIMARY KEY,session_id TEXT,recap TEXT);
+         INSERT INTO history VALUES(1,'target prompt','target'),(2,'child prompt','child'),(3,'neighbor prompt','neighbor'),(4,'not inventoried','other-child'),(5,'legacy',NULL);
+         INSERT INTO session_titles VALUES('target','target'),('child','child'),('neighbor','neighbor');
+         INSERT INTO session_recaps VALUES(1,'child','child'),(2,'neighbor','neighbor');",
+    ).unwrap();
+    drop(conn);
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    assert_eq!(p["dependent_ids"], json!(["child"]));
+    for table in ["history", "session_titles", "session_recaps"] {
+        assert!(p["targets"].as_array().unwrap().iter()
+            .any(|v| v.as_str().unwrap().ends_with(&format!("{table}[session_id=child]"))), "{p}");
+    }
+    assert_eq!(library(&db, &home, deletion(&p))["ok"], true);
+    assert!(!target.exists());
+    assert!(!artifacts.exists());
+    assert_eq!(std::fs::read(&neighbor).unwrap(), neighbor_bytes);
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    let ids: Vec<i64> = conn.prepare("SELECT id FROM history ORDER BY id").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(ids, [3, 4, 5]);
+    for table in ["session_titles", "session_recaps"] {
+        assert_eq!(conn.query_row(&format!("SELECT session_id FROM {table}"), [], |r| r.get::<_, String>(0)).unwrap(), "neighbor");
+    }
+}
+
+#[test]
+fn omp_unverified_or_ambiguous_owned_child_identity_refuses_entire_delete() {
+    for kind in ["missing-header", "conflicting-header", "indexed-outside"] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let db = temp.path().join("index.sqlite");
+        let target = seed(&home, "omp", "target");
+        let bytes = std::fs::read(&target).unwrap();
+        let artifacts = target.with_extension("");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        let child = artifacts.join("child.jsonl");
+        match kind {
+            "missing-header" => std::fs::write(&child, "{\"type\":\"message\"}\n{\"type\":\"session\",\"id\":\"child\"}\n").unwrap(),
+            "conflicting-header" => std::fs::write(&child, "{\"type\":\"session\",\"id\":\"child\"}\n{\"type\":\"session\",\"id\":\"neighbor\"}\n").unwrap(),
+            _ => {
+                let outside = seed(&home, "omp", "child");
+                std::fs::copy(outside, &child).unwrap();
+            }
+        }
+        let child_bytes = std::fs::read(&child).unwrap();
+        let history_path = home.join(".omp/agent/history.db");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);
+             INSERT INTO history VALUES(1,'target prompt','target'),(2,'child prompt','child'),(3,'neighbor prompt','neighbor');",
+        ).unwrap();
+        drop(conn);
+        index(&db, &home);
+        let p = preview(&db, &home, "omp:target");
+        assert!(p["blocked_reason"].is_string(), "{kind}: {p}");
+        assert!(!call(&db, &home, deletion(&p)).status.success());
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        assert_eq!(std::fs::read(&child).unwrap(), child_bytes);
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
     }
 }
 #[test]
@@ -634,4 +893,82 @@ fn active_process_with_matching_store_refuses_direct_deletion() {
     );
     assert!(!call(&db, &home, deletion(&p)).status.success());
     assert_eq!(std::fs::read(source).unwrap(), bytes);
+}
+
+#[test]
+fn omp_unindexed_competing_child_transcript_refuses_history_cleanup() {
+    for after_preview in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let db = temp.path().join("index.sqlite");
+        let target = seed(&home, "omp", "target");
+        let target_bytes = std::fs::read(&target).unwrap();
+        let child = seed(&home, "omp", "child");
+        let artifacts = target.with_extension("");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::rename(&child, artifacts.join("child.jsonl")).unwrap();
+        let neighbor = seed(&home, "omp", "neighbor");
+        let history_path = home.join(".omp/agent/history.db");
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);
+             INSERT INTO history VALUES(1,'target prompt','target'),(2,'child prompt','child'),(3,'neighbor prompt','neighbor');",
+        ).unwrap();
+        drop(conn);
+        index(&db, &home);
+        let confirmed = after_preview.then(|| {
+            let p = preview(&db, &home, "omp:target");
+            assert!(p["blocked_reason"].is_null(), "{p}");
+            p
+        });
+        let mut outside = seed(&home, "omp", "child");
+        if after_preview {
+            // Competing child transcripts can also live inside another session's
+            // artifacts and never become depth-two index candidates.
+            let neighbor_artifacts = neighbor.with_extension("");
+            std::fs::create_dir_all(&neighbor_artifacts).unwrap();
+            let nested = neighbor_artifacts.join("child.jsonl");
+            std::fs::rename(&outside, &nested).unwrap();
+            outside = nested;
+        }
+        let outside_bytes = std::fs::read(&outside).unwrap();
+        let cache = rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(cache.query_row("SELECT count(*) FROM sessions WHERE agent='omp' AND id='child'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        drop(cache);
+        let p = confirmed.unwrap_or_else(|| {
+            let p = preview(&db, &home, "omp:target");
+            assert!(p["blocked_reason"].as_str()
+                .is_some_and(|reason| reason.contains("Ambiguous child-session identity")), "{p}");
+            p
+        });
+        assert!(!call(&db, &home, deletion(&p)).status.success());
+        assert_eq!(std::fs::read(&target).unwrap(), target_bytes);
+        assert_eq!(std::fs::read(&outside).unwrap(), outside_bytes);
+        assert!(artifacts.join("child.jsonl").exists());
+        let conn = rusqlite::Connection::open(&history_path).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+    }
+}
+
+#[test]
+fn omp_clean_wal_history_deletes_without_a_false_stale_confirmation() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let target = seed(&home, "omp", "target");
+    let history_path = home.join(".omp/agent/history.db");
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE history(id INTEGER PRIMARY KEY,prompt TEXT,session_id TEXT);
+         INSERT INTO history VALUES(1,'target prompt','target'),(2,'neighbor prompt','neighbor');",
+    ).unwrap();
+    drop(conn);
+    index(&db, &home);
+    let p = preview(&db, &home, "omp:target");
+    assert!(p["blocked_reason"].is_null(), "{p}");
+    assert_eq!(library(&db, &home, deletion(&p))["ok"], true);
+    assert!(!target.exists());
+    let conn = rusqlite::Connection::open(&history_path).unwrap();
+    assert_eq!(conn.query_row("SELECT session_id FROM history", [], |r| r.get::<_, String>(0)).unwrap(), "neighbor");
 }

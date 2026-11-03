@@ -46,7 +46,10 @@ function backend.ensure(cb: (string?, string?) -> ())
 	end
 	building = true
 	table.insert(waiters, cb)
+	local finished = false
 	local function finish(path: string?, err: string?)
+		if finished then return end
+		finished = true
 		building = false
 		ready = path
 		local pending = waiters
@@ -64,6 +67,7 @@ function backend.ensure(cb: (string?, string?) -> ())
 	local started, err = pcall(function()
 		tern.fs.mkdir(root)
 		tern.process.run({ cargo, "build", "--release", "--locked", "--manifest-path", tern.plugin.dir .. "/indexer/Cargo.toml", "--target-dir", root }, { timeout_ms = 1200000 }, function(result)
+			if finished then return end
 			if result.status ~= 0 or result.timed_out then
 				finish(nil, "Backend build failed. Install Rust/Cargo and your platform's native build tools, then Refresh to retry. " .. (result.timed_out and "Build timed out after 20 minutes." or result.stderr))
 				return

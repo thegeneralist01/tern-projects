@@ -5,26 +5,14 @@ All notable changes to `tern-projects` will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- Permanently deleting an OMP chat removes prompt history attributed to that session and rebuilds its full-text index, repairing any existing index inconsistencies.
+- **OMP permanent deletion**: removes prompt history attributed to the selected session and verified owned dependents, while preserving other sessions and unattributed prompts. Unsupported schemas, trigger side effects, ambiguous identities, busy stores, and stale confirmations refuse before source removal; SQL statement failures roll back before unlinking transcripts.
 - **Projects commands and New chat on Tern 0.9.5**: `Projects`, `Projects: Search` and `Projects: Settings` now open the panel, and **New chat** opens its tab. Tern 0.9.5's `cx.session:pane(id)` and `cx.layout:split(id, …)` can return nil for a live pane id, so the window now looks panes up through `cx.session:panes()` and opens the panel with `cx:new_block(…, "split")` when `split` finds no target.
 - Thanks to [Florian Séran (@flosrn)](https://github.com/flosrn) for this fix, imported from [commit `abcdcdf`](https://github.com/flosrn/tern-projects/commit/abcdcdfc87f85868d38835e5d7fbaa0fb7b3648e).
-- **New chat no longer goes quiet.** `New chat` with a default harness now asks only for that launch plan instead of surveying every installed CLI first (a survey that probes each tool with a 5 second cap and showed nothing meanwhile). The panel shows `Preparing new chat…` with a `Cancel` action, explains itself after 5 seconds, and gives up after 15 seconds (`launch-plan`) or 65 seconds (tool survey) with a retryable error — or names the build when `cli.status()` says one is running. Further clicks during a wait are ignored and the New chat buttons are disabled.
-- **A backend that fails to start is reported.** `tern.process.run` raises when the executable cannot be spawned; that error escaped `lib/cli.luau` before any callback ran, leaving the panel waiting forever. Spawns are now wrapped and reported as `Cannot start project backend: …` through the normal error path, and each request completes at most once (timeout, non-zero exit, bad JSON, spawn failure, success).
-- **A failing build waiter no longer strands the others.** `backend.ensure` reports the build result to every waiter even when one of them raises; the failure is logged instead of aborting the loop.
-- **A queued launch that was cancelled never starts.** `cli.request`/`panel.request` can drop a request whose caller lost interest (`launch` and `harnesses` channels pass a liveness/mode/flow predicate), so a launch that timed out cannot spawn a process and open a late tab once a build finishes.
-- **Failing launches explain themselves.** An unavailable default harness opens the picker with the reason (and selects the first usable tool); other launch failures surface a banner and toast instead of nothing; a missing primary folder still offers `Edit project…`.
-- **A launch whose panel lost focus says so.** The panel records a one-shot nonce with its launch, so `window.luau` can tell its own launch (now `Chat not started` / `Focus the Projects panel and try again.`) from unrelated `tern-projects://launch` text in a terminal, and no longer toasts `Starting …` before the tab exists.
-
-## [0.2.5] — 2026-10-30
-
-### Fixed
-- **Project folder storage**: saved project folders and the folder browser now record the plain spelling instead of the `\\?\` verbatim path. Existing rows keep working (launch normalizes them) and are rewritten the next time the project is saved.
-
-## [0.2.4] — 2026-10-30
-
-### Fixed
-- **Windows launch paths**: `launch-plan` no longer hands out the verbatim `\\?\` spelling that `std::fs::canonicalize` produces. It is now stripped from the primary folder (`--cwd` / `--cd` / positional), the extra `--add-dir` folders, and the OMP `--config` overlay. Harnesses that key per-project state on the cwd crashed instead of starting: OMP builds its session directory from the cwd, keeps the `?`, and fails with `ENOENT: no such file or directory, mkdir ...\---?-D--...--` (the shell then exits 1).
-- UNC folders keep their normal spelling (`\\?\UNC\server\share` → `\\server\share`).
+- **Responsive New chat**: a configured default harness skips the full tool survey. Preparation shows progress and Cancel, with 15-second launch-plan and 65-second survey deadlines. Timed-out launch plans retain verified alternatives; failed surveys offer an explicit retry without enabling unverified tools.
+- **Request lifecycle**: spawn failures reach callers, failing build callbacks no longer strand other requests, and cancelled or superseded launches cannot start queued processes or apply late results.
+- **Launch authorization**: short-lived, pane- and payload-bound claims isolate concurrent launches, reject changed commands and replay, and preserve the focused local Projects-panel requirement. Cancel now works while a picker is open.
+- **Windows paths**: launch plans, OMP overlays, saved project folders, and folder browsing use normal drive/UNC spellings instead of `\\?\` prefixes. Unsupported device paths and non-Unicode paths are preserved rather than silently redirected.
+- Thanks to [Shengfu Zhao (@Zestful-ss)](https://github.com/Zestful-ss) for the [Windows launch fix](https://github.com/Zestful-ss/tern-projects/commit/adb7395f50fdd5331e015a8fecb7b1e76fdbd85c), [folder-storage fix](https://github.com/Zestful-ss/tern-projects/commit/7470c81b6dd21dfebc200dbfd4c7e77ba5619947), [New-chat improvements](https://github.com/Zestful-ss/tern-projects/commit/cca6635cb7081fc1c43e74ec39ab60d2c07cdcba), and [OMP history cleanup](https://github.com/Zestful-ss/tern-projects/commit/f70784911f20fb04e22a92e6c3bd5467ec6a4a6d). Original authorship is preserved; upstream safety and interaction corrections are recorded separately.
 
 ## [0.2.3] — 2026-10-16
 

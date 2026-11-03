@@ -92,10 +92,13 @@ tern plugin reload                               # Reload plugin in running Tern
   - Permanent chat deletion verifies source identity and idle store conditions before removing any files or database records.
   - Harnesses with native CLI commands (e.g. Codex, OpenCode) use their verified native CLI deletion subcommands.
   - Harnesses without native deletion (OMP, Claude, Pi, Cursor) remove only verified session files/artifacts and refuse if the process is running or store ownership cannot be proven.
+  - OMP history cleanup accepts only verified table/FTS schemas and bounded indexing triggers, deletes exact binary-matched session IDs and verified owned dependents, and preserves unattributed history. Unknown triggers, foreign-key dependencies, or ambiguous indexed/unindexed dependent identities refuse deletion.
+  - OMP confirmation is revalidated after acquiring the history write lock with a 5000ms busy timeout; SQL deletion and FTS repair must succeed before transcript removal. Filesystem removals and SQLite commit are not crash-atomic; partial failures are reported without automatic retry.
   - Never delete user project files, repositories, or worktrees during chat deletion.
 - **Launch and Resume Contracts**:
   - Fresh chats launch with the primary project directory as `cwd`. Any additional folders are passed via harness-supported CLI flags (e.g. `--add-dir`), or a warning is surfaced before launching primary-only.
   - Command generation must be safely quoted per OS (`shell_join` on Unix, Base64-encoded command blocks on Windows).
+  - Fresh-chat launch URLs carry a per-nonce `launch:<nonce>` claim bound to the exact pane, command, and directory. Claims expire after 10 seconds and must be consumed before tab creation; a claim never substitutes for a live focused Projects panel on the local host.
 
 ## Code Conventions
 
