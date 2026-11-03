@@ -2,7 +2,7 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
-## [Unreleased]
+## [0.2.4] — 2026-11-03
 
 ### Added
 - **Plugin update checks**: checks the official stable manifest version at startup when due and every 24 hours, with a persistent opt-out, Check now, and available-update notice.
