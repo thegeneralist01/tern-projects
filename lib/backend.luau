@@ -7,6 +7,16 @@ local waiters: { (string?, string?) -> () } = {}
 local root = tern.plugin.data .. "/backend"
 local executable = root .. "/release/tern-projects" .. (tern.runtime.os == "windows" and ".exe" or "")
 
+local function diagnostics(output: string): string
+	local errors = {}
+	for line in output:gmatch("[^\r\n]+") do
+		if line:find("error:", 1, true) or line:match("^error%[") then
+			table.insert(errors, (line:gsub("^%s+", "")))
+		end
+	end
+	return if #errors > 0 then table.concat(errors, "\n") else output
+end
+
 local function inputs(): string
 	local files = { "indexer/Cargo.toml", "indexer/Cargo.lock" }
 	local function visit(dir: string)
@@ -64,12 +74,14 @@ function backend.ensure(cb: (string?, string?) -> ())
 	local cargoHome = tern.getenv("CARGO_HOME") or (home .. "/.cargo")
 	local cargo = cargoHome .. "/bin/cargo" .. (tern.runtime.os == "windows" and ".exe" or "")
 	if not tern.fs.exists(cargo) then cargo = "cargo" end
-	local started, err = pcall(function()
-		tern.fs.mkdir(root)
-		tern.process.run({ cargo, "build", "--release", "--locked", "--manifest-path", tern.plugin.dir .. "/indexer/Cargo.toml", "--target-dir", root }, { timeout_ms = 1200000 }, function(result)
+	local function compile(env: { [string]: string }?)
+		local started, err = pcall(tern.process.run, { cargo, "build", "--release", "--locked", "--manifest-path", tern.plugin.dir .. "/indexer/Cargo.toml", "--target-dir", root }, { timeout_ms = 1200000, env = env }, function(result)
 			if finished then return end
 			if result.status ~= 0 or result.timed_out then
-				finish(nil, "Backend build failed. Install Rust/Cargo and your platform's native build tools, then Refresh to retry. " .. (result.timed_out and "Build timed out after 20 minutes." or result.stderr))
+				tern.log.error("Cargo build output:\n" .. result.stdout .. result.stderr)
+				local detail = if result.timed_out then "Build timed out after 20 minutes." else diagnostics(if result.stderr ~= "" then result.stderr else result.stdout)
+				if detail == "" then detail = "Cargo exited with status " .. tostring(result.status) .. "." end
+				finish(nil, "Backend build failed. " .. detail .. "\nRefresh to retry. Full compiler output is in Tern's log.")
 				return
 			end
 			if not tern.fs.exists(executable) then finish(nil, "Cargo succeeded but the backend executable is missing: " .. executable); return end
@@ -77,8 +89,30 @@ function backend.ensure(cb: (string?, string?) -> ())
 			if not saved then finish(nil, "Cannot save backend build state: " .. tostring(saveErr)); return end
 			finish(executable, nil)
 		end)
+		if not started then finish(nil, "Cannot start Cargo. Check your Rust installation, then Refresh to retry: " .. tostring(err)) end
+	end
+	local started, err = pcall(function()
+		tern.fs.mkdir(root)
+		if tern.runtime.os ~= "macos" then compile(nil); return end
+		-- Keep the SDK and compiler in the selected Apple toolchain, not a mix
+		-- of PATH's cc/linker and a newer Command Line Tools SDK chosen by rustc.
+		tern.process.run({ "/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path" }, { timeout_ms = 10000 }, function(result)
+			if finished then return end
+			local sdk = (result.stdout:gsub("^%s+", ""):gsub("%s+$", ""))
+			if result.status ~= 0 or result.timed_out or sdk == "" then
+				local detail = if result.timed_out then "xcrun timed out after 10 seconds." else result.stderr
+				finish(nil, "Cannot select a macOS SDK. Install or select Apple developer tools, then Refresh to retry. " .. detail)
+				return
+			end
+			compile({
+				SDKROOT = sdk,
+				CC = "/usr/bin/clang",
+				CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = "/usr/bin/clang",
+				CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER = "/usr/bin/clang",
+			})
+		end)
 	end)
-	if not started then finish(nil, "Cannot start backend build. Install Rust/Cargo and native build tools, then Refresh to retry: " .. tostring(err)) end
+	if not started then finish(nil, "Cannot prepare backend build: " .. tostring(err)) end
 end
 
 return backend

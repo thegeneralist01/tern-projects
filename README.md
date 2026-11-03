@@ -22,7 +22,9 @@ tern plugin install github.com/thegeneralist01/tern-projects
 
 *(Or open **Projects** from the Tern command palette).*
 
-That's it. Tern fetches the plugin, and the background engine builds automatically on first load. No manual compile steps, no extra configuration.
+Tern fetches the plugin, and the background engine builds automatically on first load. Rust/Cargo and your platform's native C build tools are required; no manual compile step is needed.
+
+On macOS, install Apple developer tools (`xcode-select --install` if needed) or select your Xcode installation. Automatic builds use the SDK selected by `xcrun --sdk macosx` and Apple's compiler/linker, rather than mixing an unrelated `cc` from `PATH` with a different SDK.
 
 ### Updates
 

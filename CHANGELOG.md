@@ -2,6 +2,12 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **macOS backend builds**: use the selected Apple SDK and compiler/linker together. An older linker inherited through `PATH` can otherwise fail on newer Command Line Tools SDK architecture entries even when Rust and Cargo are installed.
+- **Build diagnostics**: surface compiler errors instead of leading progress/warning output, keep complete Cargo output in Tern's log, and distinguish SDK discovery, Cargo startup, and compilation failures.
+
 ## [0.2.4] — 2026-11-03
 
 ### Added

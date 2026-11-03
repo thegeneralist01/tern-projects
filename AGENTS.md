@@ -89,6 +89,8 @@ tern plugin reload                               # Reload plugin in running Tern
   - `library.sqlite` stores durable user configurations (curated projects, folder associations, custom pins, chat assignments, global settings). Never drop or clear `library.sqlite` during index rebuilds.
 - **Automatic Compilation**:
   - `lib/backend.luau` automatically compiles the Rust binary with Cargo when the plugin loads and caches the binary inside `<plugin.data>/backend/`. Requests queue until compilation finishes.
+  - On macOS, resolve the active Apple SDK with `/usr/bin/xcrun --sdk macosx --show-sdk-path`, set `SDKROOT`, and use `/usr/bin/clang` for native C compilation and both supported Cargo target linkers. This avoids mixing PATH-provided linkers with an incompatible SDK; other platforms retain Cargo's defaults.
+  - Build failures retain complete Cargo output in Tern's log and summarize compiler errors before progress/warning noise in the UI. SDK discovery and asynchronous Cargo spawn failures must settle all queued callers.
 - **Plugin Updates**:
   - `lib/updates.luau` starts before the Rust backend. Automatic checks compare the official `main/plugin.toml` stable numeric version at most daily; Tern KV stores updater preferences, attempt/cache timestamps, and pending-install recovery independently of `library.sqlite`.
   - Every in-app installation requires explicit, version-bound UI approval and uses only `tern plugin install github.com/thegeneralist01/tern-projects --force` as argv, never a shell command from remote metadata. The installer fetches latest official `main`, not a pinned version; success requires disk confirmation of at least the last checked version.
