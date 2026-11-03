@@ -937,7 +937,7 @@ end
 
 -- Actions ------------------------------------------------------------------------------------
 
-local SETTINGS = {"default", "icons", "archived", "refresh", "update-auto", "update-check", "update-install", "update-copy"}
+local SETTINGS = {"default", "icons", "archived", "refresh", "update-auto", "update-auto-install", "update-check", "update-install", "update-copy"}
 local function update_busy(snapshot: any): boolean
 	return snapshot.status == "checking" or snapshot.status == "installing"
 end
@@ -953,6 +953,24 @@ local function confirm_update(s: any)
 		c.note("Installed " .. snapshot.current_version .. ". Last checked version: " .. snapshot.latest_version .. "; the official version may advance before installation. Updates are never installed automatically."),
 	}, buttons = {{id = "cancel", label = "Cancel"}, {id = accept, label = "Install update", variant = "primary"}}, focus = 1,
 		version = snapshot.latest_version, accept = accept}
+end
+local function confirm_auto_install(s: any)
+	cancel_flow(s)
+	s.update_confirm_seq = (s.update_confirm_seq or 0) + 1
+	local accept = "update-auto-install-" .. tostring(s.update_confirm_seq)
+	local snapshot = updates.get()
+	local body = {
+		c.note("Installs the latest official main branch whenever a check finds a newer version, replacing plugin files and reloading the plugin (open Projects panes may close)."),
+		c.note("Linked development checkouts are never overwritten."),
+		c.note("Installation waits for permanent chat deletion."),
+		c.note("A failed automatic installation is not retried for the same version."),
+	}
+	if snapshot.status == "available" and snapshot.latest_version then
+		table.insert(body, c.note("Version " .. snapshot.latest_version .. " is available and will install now."))
+	end
+	s.confirm = {kind = "auto-install", title = "Install updates automatically?", body = body,
+		buttons = {{id = "cancel", label = "Cancel"}, {id = accept, label = "Turn on", variant = "primary"}}, focus = 1,
+		accept = accept}
 end
 local function hide_busy(s: any)
 	cancel_flow(s)
@@ -1027,12 +1045,12 @@ local function confirm_action(s: any, id: string)
 	if not conf then return end
 	for _, b in conf.buttons do if b.id == id and b.disabled then return end end
 	if id == "cancel" then
-		if s.busy and conf.kind ~= "update" then hide_busy(s); return end
+		if s.busy and conf.kind ~= "update" and conf.kind ~= "auto-install" then hide_busy(s); return end
 		cancel_flow(s)
 		if s.archived_picker then s.picker = s.archived_picker; s.archived_picker = nil end
 		return
 	end
-	if s.busy and conf.kind ~= "update" then return end
+	if s.busy and conf.kind ~= "update" and conf.kind ~= "auto-install" then return end
 	if conf.kind == "update" then
 		-- Only this dialog's affirmative action can grant consent, never a stale click.
 		if id ~= conf.accept then return end
@@ -1045,6 +1063,19 @@ local function confirm_action(s: any, id: string)
 		end
 		s.confirm = nil
 		updates.install(conf.version)
+		return
+	end
+	if conf.kind == "auto-install" then
+		if id ~= conf.accept then return end
+		local snapshot = updates.get()
+		if not snapshot.automatic or update_busy(snapshot) then
+			conf.error = if not snapshot.automatic then "Requires automatic checks." else "Update check or installation is in progress."
+			conf.buttons[2].disabled = true
+			conf.focus = 1
+			return
+		end
+		s.confirm = nil
+		updates.set_auto_install(true)
 		return
 	end
 	if id == "edit-launch-project" then
@@ -1122,15 +1153,25 @@ action = function(s: any, act: string, value: string?)
 		s.settings_focus = "update-copy"
 		copy(s, updates.get().command, "update command")
 		return
-	elseif act == "update-check" or act == "update-auto" or act == "update-install" then
+	elseif act == "update-auto-install" and (value == "off" or (value == nil and updates.get().auto_install)) then
+		s.settings_focus = "update-auto-install"
+		updates.set_auto_install(false)
+		return
+	elseif act == "update-check" or act == "update-auto" or act == "update-auto-install" or act == "update-install" then
 		local snapshot = updates.get()
 		if update_busy(snapshot) then return end
 		if act == "update-check" then s.settings_focus = "update-check"; updates.check()
 		elseif act == "update-install" then s.settings_focus = "update-install"; confirm_update(s)
-		else
+		elseif act == "update-auto" then
 			s.settings_focus = "update-auto"
 			if value == nil or value == "on" or value == "off" then
 				updates.set_automatic(if value == nil then not snapshot.automatic else value == "on")
+			end
+		elseif act == "update-auto-install" then
+			s.settings_focus = "update-auto-install"
+			if not snapshot.automatic then return end
+			if (value == "on" or value == nil) and not snapshot.auto_install then
+				confirm_auto_install(s)
 			end
 		end
 		return
@@ -1224,12 +1265,13 @@ local function settings_key(s: any, k: Key): boolean
 	local f = s.settings_focus
 	if f == "icons" and (name == "left" or name == "right") then action(s, "icon-style", if name == "left" then "color" else "monochrome"); return true end
 	if f == "update-auto" and (name == "left" or name == "right") then action(s, "update-auto", if name == "left" then "on" else "off"); return true end
+	if f == "update-auto-install" and (name == "left" or name == "right") then action(s, "update-auto-install", if name == "left" then "on" else "off"); return true end
 	if (name == "enter" or name == "space") and f then
 		if f == "default" then action(s, "default-picker", nil)
 		elseif f == "icons" then action(s, "icon-style", nil)
 		elseif f == "archived" then action(s, "archived", nil)
 		elseif f == "refresh" then refresh(s)
-		elseif f == "update-auto" or f == "update-check" or f == "update-install" or f == "update-copy" then action(s, f, nil) end
+		elseif f == "update-auto" or f == "update-auto-install" or f == "update-check" or f == "update-install" or f == "update-copy" then action(s, f, nil) end
 		return true
 	end
 	return false
@@ -1458,14 +1500,20 @@ local function updates_view(s: any): any
 		setting_row("update-version", false, "Installed version", "Projects plugin on this machine.", c.note(snapshot.current_version)),
 		setting_row("update-latest", false, "Latest version", if snapshot.checked_at then "Checked " .. fmt.ago(snapshot.checked_at * 1000) else "No completed check yet.",
 			c.note(snapshot.latest_version or "Not checked")),
-		setting_row("update-auto", f == "update-auto", "Automatic checks", "At startup and every 24 hours. Never auto-installs.",
+		setting_row("update-auto", f == "update-auto", "Automatic checks", "At startup and every 24 hours.",
 			if busy then c.button(if snapshot.automatic then "On" else "Off", nil, {size = "sm", disabled = true, focused = f == "update-auto"})
 			else c.seg({{id = "on", label = "On"}, {id = "off", label = "Off"}}, automatic, "update-auto", {size = "sm", focused = if f == "update-auto" then automatic else nil})),
+		setting_row("update-auto-install", f == "update-auto-install", "Automatic installation",
+			if not snapshot.automatic then "Requires automatic checks." else "Install new official versions without review. Off by default.",
+			if not snapshot.auto_install and (busy or not snapshot.automatic) then c.button("Off", nil, {size = "sm", disabled = true, focused = f == "update-auto-install"})
+			else c.seg({{id = "on", label = "On"}, {id = "off", label = "Off"}}, if snapshot.auto_install then "on" else "off", "update-auto-install", {size = "sm", focused = if f == "update-auto-install" then (if snapshot.auto_install then "on" else "off") else nil})),
 		setting_row("update-check", f == "update-check", labels[snapshot.status], descriptions[snapshot.status],
 			c.button(if snapshot.status == "checking" then "Checking…" else "Check now", "update-check", {size = "sm", disabled = busy, focused = f == "update-check"})),
 	}
 	if snapshot.message then
-		table.insert(rows, c.banner("update-message", if snapshot.status == "error" then "error" else "info", if snapshot.status == "error" then "warn" else nil, snapshot.message))
+		-- An available update only carries an error banner after a failed automatic installation.
+		local failed = snapshot.status == "error" or (snapshot.status == "available" and string.find(snapshot.message, "^Automatic installation failed") ~= nil)
+		table.insert(rows, c.banner("update-message", if failed then "error" else "info", if failed then "warn" else nil, snapshot.message))
 	end
 	table.insert(rows, setting_row("update-install", f == "update-install", "Install update",
 		if snapshot.install_blocked then "Wait for permanent chat deletion to finish."
@@ -1575,7 +1623,7 @@ local function dock_view(s: any): any?
 end
 local function confirm_view(s: any): any
 	local conf = s.confirm
-	local busy = s.busy and conf.kind ~= "update"
+	local busy = s.busy and conf.kind ~= "update" and conf.kind ~= "auto-install"
 	local buttons = {}
 	for i, b in conf.buttons do
 		if i == 2 then table.insert(buttons, c.grow()) end
@@ -1647,6 +1695,11 @@ local panel: BlockDef<any> = {
 				conf.focus = 1
 				conf.error = "The available update changed. Cancel and review the latest version before installing."
 			end
+			if conf and conf.kind == "auto-install" and (not snapshot.automatic or update_busy(snapshot)) then
+				conf.buttons[2].disabled = true
+				conf.focus = 1
+				conf.error = if not snapshot.automatic then "Requires automatic checks." else "Update check or installation is in progress."
+			end
 			s.cx:render()
 		end)
 		rebuild(s)
@@ -1699,7 +1752,7 @@ local panel: BlockDef<any> = {
 	end,
 	key = function(s, k, _cx)
 		if k.name == "escape" and s.launch_pending then action(s, "cancel-launch", nil); return true end
-		if s.busy and not (s.confirm and s.confirm.kind == "update") then if k.name == "escape" then hide_busy(s) end; return true end
+		if s.busy and not (s.confirm and (s.confirm.kind == "update" or s.confirm.kind == "auto-install")) then if k.name == "escape" then hide_busy(s) end; return true end
 		if s.editor then
 			local d = s.editor
 			if d.browser then

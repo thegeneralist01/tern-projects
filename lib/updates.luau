@@ -1,5 +1,5 @@
 --!strict
--- Host-only update checks. Installation always requires a fresh, version-bound UI approval.
+-- Host-only update checks. Installation requires version-bound UI approval or opt-in automatic installation.
 local updates = {}
 
 export type State = {
@@ -8,30 +8,32 @@ export type State = {
 	latest_version: string?,
 	checked_at: number?,
 	automatic: boolean,
+	auto_install: boolean,
 	install_blocked: boolean,
 	message: string?,
 	command: string,
 }
 
-type Pending = { version: string, started_at: number }
+type Pending = { version: string, started_at: number, auto: boolean? }
 type Cache = {
 	schema: number,
 	automatic: boolean,
+	auto_install: boolean?,
+	auto_attempted: string?,
 	attempted_at: number?,
 	checked_at: number?,
 	latest_version: string?,
 	failure: string?,
 	pending: Pending?,
 }
-
 local COMMAND = "tern plugin install github.com/thegeneralist01/tern-projects --force"
 local ENDPOINT = "https://raw.githubusercontent.com/thegeneralist01/tern-projects/main/plugin.toml"
 local KEY = "plugin-updates:v1"
 local DAY = 24 * 60 * 60
 local INSTALL_SECONDS = 120
 local MAX_METADATA = 65536
-local state: State = { status = "idle", current_version = "unknown", automatic = true, install_blocked = false, command = COMMAND }
-local cache: Cache = { schema = 1, automatic = true }
+local state: State = { status = "idle", current_version = "unknown", automatic = true, auto_install = false, install_blocked = false, command = COMMAND }
+local cache: Cache = { schema = 1, automatic = true, auto_install = false }
 local started = false
 local storage_ready = false
 local active: ("check" | "install")? = nil
@@ -160,6 +162,8 @@ local function load(): (boolean, string?)
 	if not ok then return false, "Cannot read update preferences: " .. tostring(value) end
 	if value == nil then return true, nil end
 	if type(value) ~= "table" or value.schema ~= 1 or type(value.automatic) ~= "boolean"
+		or (value.auto_install ~= nil and type(value.auto_install) ~= "boolean")
+		or (value.auto_attempted ~= nil and (type(value.auto_attempted) ~= "string" or not version_parts(value.auto_attempted)))
 		or (value.attempted_at ~= nil and not timestamp(value.attempted_at))
 		or (value.checked_at ~= nil and not timestamp(value.checked_at))
 		or (value.latest_version ~= nil and (type(value.latest_version) ~= "string" or not version_parts(value.latest_version)))
@@ -167,29 +171,40 @@ local function load(): (boolean, string?)
 		return false, "Saved update preferences are malformed."
 	end
 	if value.pending ~= nil and (type(value.pending) ~= "table" or type(value.pending.version) ~= "string"
-		or not version_parts(value.pending.version) or not timestamp(value.pending.started_at)) then
+		or not version_parts(value.pending.version) or not timestamp(value.pending.started_at)
+		or (value.pending.auto ~= nil and type(value.pending.auto) ~= "boolean")) then
 		return false, "Saved pending installation is malformed; no installation will be started."
 	end
 	cache = {
-		schema = 1, automatic = value.automatic, attempted_at = value.attempted_at,
+		schema = 1, automatic = value.automatic, auto_install = value.auto_install == true,
+		auto_attempted = value.auto_attempted,
+		attempted_at = value.attempted_at,
 		checked_at = value.checked_at, latest_version = value.latest_version, failure = value.failure,
-		pending = if value.pending then { version = value.pending.version, started_at = value.pending.started_at } else nil,
+		pending = if value.pending then { version = value.pending.version, started_at = value.pending.started_at, auto = if value.pending.auto == true then true else nil } else nil,
 	}
 	return true, nil
 end
 
 local function cached_state()
 	state.automatic = cache.automatic
+	state.auto_install = cache.auto_install == true
 	state.checked_at = cache.checked_at
 	state.latest_version = cache.latest_version
 	state.message = cache.failure
-	if cache.failure then state.status = "error"
-	elseif cache.latest_version then state.status = if newer(cache.latest_version, state.current_version) then "available" else "current"
-	else state.status = "idle" end
+	if cache.latest_version and newer(cache.latest_version, state.current_version) and (not cache.failure or cache.auto_attempted == cache.latest_version) then
+		state.status = "available"
+	elseif cache.failure then
+		state.status = "error"
+	elseif cache.latest_version then
+		state.status = if newer(cache.latest_version, state.current_version) then "available" else "current"
+	else
+		state.status = "idle"
+	end
 end
 
 local schedule: () -> ()
 local check: () -> ()
+local maybe_auto_install: () -> ()
 
 schedule = function()
 	cancel_timer()
@@ -206,21 +221,29 @@ schedule = function()
 	end)
 end
 
-local function finish_install(target: string, failure: string?)
+local function finish_install(target: string, failure: string?, is_auto: boolean?)
 	local installed, read_error = installed_version()
 	cache.pending = nil
 	if installed then state.current_version = installed end
 	if not failure and (not installed or newer(target, installed)) then
 		failure = "Installation could not be confirmed from disk. " .. (read_error or ("Expected at least " .. target .. ", found " .. tostring(installed) .. "."))
 	end
+	if failure and is_auto then
+		failure = "Automatic installation failed: " .. failure
+	end
 	cache.failure = if failure then manual(failure) else nil
 	if not failure then cache.latest_version = installed end
 	local saved, save_error = save()
 	active = nil
 	state.latest_version = cache.latest_version
-	state.status = if failure or not saved then "error" else "updated"
+	state.status = if not saved then "error"
+		elseif failure and is_auto and installed and newer(target, installed) then "available"
+		elseif failure then "error"
+		else "updated"
 	state.message = if not saved then manual("Cannot save installation recovery state: " .. tostring(save_error))
-		elseif failure then cache.failure else "Updated to " .. tostring(installed) .. "."
+		elseif failure then cache.failure
+		elseif is_auto then "Automatically updated to " .. tostring(installed) .. "."
+		else "Updated to " .. tostring(installed) .. "."
 	schedule()
 	notify()
 end
@@ -230,12 +253,13 @@ local function recover_install(pending: Pending)
 	cancel_timer()
 	state.status = "installing"
 	state.latest_version = pending.version
-	state.message = "Confirming the previously approved installation from disk…"
+	local is_auto = pending.auto == true
+	state.message = if is_auto then "Confirming the automatic installation from disk…" else "Confirming the previously approved installation from disk…"
 	local installed = installed_version()
-	if installed and not newer(pending.version, installed) then finish_install(pending.version, nil); return end
+	if installed and not newer(pending.version, installed) then finish_install(pending.version, nil, is_auto); return end
 	local age = os.time() - pending.started_at
 	if age < 0 or age >= INSTALL_SECONDS then
-		finish_install(pending.version, "The previously approved installation was interrupted or could not be confirmed.")
+		finish_install(pending.version, "The previously approved installation was interrupted or could not be confirmed.", is_auto)
 		return
 	end
 	local generation = timer_generation
@@ -243,8 +267,65 @@ local function recover_install(pending: Pending)
 		if generation ~= timer_generation or active ~= "install" then return end
 		timer = nil
 		local current = installed_version()
-		finish_install(pending.version, if current and not newer(pending.version, current) then nil else "The previously approved installation was interrupted or could not be confirmed.")
+		finish_install(pending.version, if current and not newer(pending.version, current) then nil else "The previously approved installation was interrupted or could not be confirmed.", is_auto)
 	end)
+end
+
+local function start_install(target: string, is_auto: boolean)
+	active = "install"
+	cancel_timer()
+	state.status = "installing"
+	state.message = if is_auto then "Automatically installing update to " .. target .. "…" else "Installing the approved update to " .. target .. "…"
+	notify()
+	local finished = false
+	local function finish(failure: string?)
+		if finished then return end
+		finished = true
+		finish_install(target, failure, is_auto)
+	end
+	local ok, spawn_error = pcall(function()
+		tern.process.run(
+			{ installer_executable(), "plugin", "install", "github.com/thegeneralist01/tern-projects", "--force" },
+			{ timeout_ms = INSTALL_SECONDS * 1000 }, function(result: any)
+			if finished then return end
+			if result.timed_out then finish("Installation timed out after 120 seconds."); return end
+			if result.status ~= 0 then
+				local detail = if result.stderr ~= "" then result.stderr else result.stdout
+				finish("Installer exited with status " .. tostring(result.status) .. ". " .. tostring(detail):sub(1, 2000))
+				return
+			end
+			finish(nil)
+		end)
+	end)
+	if not ok and not finished then finish("Cannot start the Tern installer: " .. tostring(spawn_error)) end
+end
+
+maybe_auto_install = function()
+	if not started or not storage_ready then return end
+	if not (cache.automatic and cache.auto_install) then return end
+	if active ~= nil then return end
+	if state.status ~= "available" then return end
+	local target = state.latest_version
+	if not target then return end
+	if deletions ~= 0 then return end
+	if cache.auto_attempted == target then return end
+	local installed = installed_version()
+	if not installed or not newer(target, installed) then return end
+
+	local previous_attempted = cache.auto_attempted
+	cache.auto_attempted = target
+	cache.pending = { version = target, started_at = os.time(), auto = true }
+	cache.failure = nil
+	local saved, err = save()
+	if not saved then
+		cache.pending = nil
+		cache.auto_attempted = previous_attempted
+		state.status = "error"
+		state.message = manual("Cannot persist automatic installation state; installation was not started: " .. tostring(err))
+		notify()
+		return
+	end
+	start_install(target, true)
 end
 
 function updates.start()
@@ -269,6 +350,7 @@ function updates.start()
 			if not saved then tern.log.error("Cannot clear superseded update failure: " .. tostring(save_error)) end
 		end
 		cached_state()
+		maybe_auto_install()
 	end
 	schedule()
 	notify()
@@ -277,11 +359,10 @@ end
 function updates.get(): State
 	return {
 		status = state.status, current_version = state.current_version, latest_version = state.latest_version,
-		checked_at = state.checked_at, automatic = state.automatic, message = state.message, command = COMMAND,
-		install_blocked = deletions > 0,
+		checked_at = state.checked_at, automatic = state.automatic, auto_install = state.auto_install,
+		message = state.message, command = COMMAND, install_blocked = deletions > 0,
 	}
 end
-
 function updates.subscribe(on_change: () -> ()): () -> ()
 	next_subscriber += 1
 	local id = next_subscriber
@@ -297,6 +378,7 @@ check = function()
 		storage_ready = loaded
 		if not loaded then state.status = "error"; state.message = manual(tostring(err)); notify(); return end
 		state.automatic = cache.automatic
+		state.auto_install = cache.auto_install == true
 		if cache.pending then recover_install(cache.pending); notify(); return end
 	end
 	cancel_timer()
@@ -318,6 +400,8 @@ check = function()
 		state.status = if failure or not persisted then "error" elseif latest and newer(latest, state.current_version) then "available" else "current"
 		state.message = if not persisted then manual("Cannot save update check state: " .. tostring(persist_error)) else cache.failure
 		schedule()
+		-- Starting an installation cancels the timer; finish_install reschedules.
+		maybe_auto_install()
 		notify()
 	end
 	if not saved then finish(nil, "Cannot save the update attempt: " .. tostring(save_error)); return end
@@ -360,8 +444,37 @@ function updates.set_automatic(enabled: boolean)
 	state.automatic = enabled
 	-- Do not cancel an already approved installation's recovery deadline.
 	if active ~= "install" then schedule() end
+	if enabled then maybe_auto_install() end
 	notify()
 end
+function updates.set_auto_install(enabled: boolean)
+	if not started then updates.start() end
+	if not storage_ready then state.status = "error"; state.message = manual("Cannot change unreadable update preferences."); notify(); return end
+	if cache.auto_install == enabled then
+		if state.auto_install ~= enabled then
+			state.auto_install = enabled
+			if enabled then maybe_auto_install() end
+			notify()
+		end
+		return
+	end
+	local previous = cache.auto_install
+	cache.auto_install = enabled
+	local saved, err = save()
+	if not saved then
+		cache.auto_install = previous
+		state.status = "error"
+		state.message = manual("Cannot save automatic installation preference: " .. tostring(err))
+		notify()
+		return
+	end
+	state.auto_install = enabled
+	if enabled then
+		maybe_auto_install()
+	end
+	notify()
+end
+
 
 -- Reloading the plugin must not interrupt permanent source cleanup. This shared
 -- host guard also rejects a deletion queued until after installation began.
@@ -375,6 +488,9 @@ function updates.begin_deletion(): ((() -> ())?, string?)
 		if released then return end
 		released = true
 		deletions -= 1
+		if deletions == 0 then
+			tern.timer(0, function() maybe_auto_install() end)
+		end
 		notify()
 	end, nil
 end
@@ -395,7 +511,7 @@ function updates.install(expected_version: string)
 		notify()
 		return
 	end
-	cache.pending = { version = expected_version, started_at = os.time() }
+	cache.pending = { version = expected_version, started_at = os.time(), auto = false }
 	cache.failure = nil
 	local saved, err = save()
 	if not saved then
@@ -405,32 +521,7 @@ function updates.install(expected_version: string)
 		notify()
 		return
 	end
-	active = "install"
-	cancel_timer()
-	state.status = "installing"
-	state.message = "Installing the approved update to " .. expected_version .. "…"
-	notify()
-	local finished = false
-	local function finish(failure: string?)
-		if finished then return end
-		finished = true
-		finish_install(expected_version, failure)
-	end
-	local ok, spawn_error = pcall(function()
-		tern.process.run(
-			{ installer_executable(), "plugin", "install", "github.com/thegeneralist01/tern-projects", "--force" },
-			{ timeout_ms = INSTALL_SECONDS * 1000 }, function(result: any)
-			if finished then return end
-			if result.timed_out then finish("Installation timed out after 120 seconds."); return end
-			if result.status ~= 0 then
-				local detail = if result.stderr ~= "" then result.stderr else result.stdout
-				finish("Installer exited with status " .. tostring(result.status) .. ". " .. tostring(detail):sub(1, 2000))
-				return
-			end
-			finish(nil)
-		end)
-	end)
-	if not ok and not finished then finish("Cannot start the Tern installer: " .. tostring(spawn_error)) end
+	start_install(expected_version, false)
 end
 
 return updates

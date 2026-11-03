@@ -2,6 +2,11 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.8] — 2026-11-03
+
+### Added
+- **Automatic installation**: opt-in automatic updates under Settings → Plugin updates (off by default). When enabled alongside automatic checks, newly checked official versions install without manual review. Automatic installation attempts at most once per version without automatic retry on failure, defers while permanent chat deletion is active, and preserves manual review after a failed attempt.
+
 ## [0.2.7] — 2026-11-03
 
 ### Fixed

@@ -28,9 +28,11 @@ On macOS, install Apple developer tools (`xcode-select --install` if needed) or 
 
 ### Updates
 
-Projects checks the official GitHub repository at startup when its last check is at least 24 hours old, then daily while Tern is running. Checks compare stable versions in `plugin.toml`; they do not install anything automatically. Disable **Automatic checks**, or use **Check now**, under **Settings → Plugin updates**.
+Projects checks the official GitHub repository at startup when its last check is at least 24 hours old, then daily while Tern is running. Checks compare stable versions in `plugin.toml`. Disable **Automatic checks**, or use **Check now**, under **Settings → Plugin updates**.
 
-When a newer version is available, choose **Review…** and explicitly confirm **Install update**. Tern installs the latest official `main` branch and reloads the plugin; open Projects panes may close. The version shown is the last checked version, not a pinned download.
+By default, installation requires manual approval: when a newer version is available, choose **Review…** and explicitly confirm **Install update**. You can also opt in to **Automatic installation** under Settings → Plugin updates (Off by default, requires Automatic checks). When enabled, newly checked official versions install without review. Enabling it while an update is available installs it immediately; re-enabling automatic checks likewise. Automatic installation makes at most one attempt per version; if an automatic installation fails, it is not retried automatically for the same version, and **Review…** remains available to retry or review manually.
+
+When installing, Tern installs the latest official `main` branch and reloads the plugin; open Projects panes may close. The version shown is the last checked version, not a pinned download.
 
 For a manual update, run:
 ```sh
