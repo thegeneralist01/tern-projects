@@ -98,11 +98,6 @@ fn concurrent_first_index_snapshot_query_and_save_preserve_library() {
         assert_eq!(projects[0]["count"], 0);
         let conn = rusqlite::Connection::open(temp.path().join("library.sqlite")).unwrap();
         assert_eq!(
-            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
             conn.query_row("SELECT count(*) FROM projects", [], |row| row
                 .get::<_, i64>(0))
                 .unwrap(),

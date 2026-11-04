@@ -89,6 +89,14 @@ fn omp_deletes_owned_artifacts_but_pi_unlinks_only_transcript() {
             conn.execute_batch("CREATE TABLE session_titles(session_id TEXT PRIMARY KEY,title TEXT,updated_at INTEGER);CREATE TABLE session_recaps(id INTEGER PRIMARY KEY,session_id TEXT,cwd TEXT,recap TEXT,created_at INTEGER);INSERT INTO session_titles VALUES('target','target',1),('neighbor','neighbor',1);INSERT INTO session_recaps VALUES(1,'target','','target',1),(2,'neighbor','','neighbor',1);").unwrap();
         }
         index(&db, &home);
+        let project = library(&db, &home, json!({
+            "op":"project-save","name":"Before move","icon":"folder","folders":[home]
+        }))["project"]["id"].as_str().unwrap().to_owned();
+        let destination = home.join("relocated");
+        std::fs::create_dir_all(&destination).unwrap();
+        library(&db, &home, json!({
+            "op":"project-save","id":project,"name":"After move","icon":"folder","folders":[destination]
+        }));
         library(
             &db,
             &home,
@@ -137,6 +145,10 @@ fn omp_deletes_owned_artifacts_but_pi_unlinks_only_transcript() {
                 .unwrap(),
             0
         );
+        let retained = conn.prepare("SELECT uid FROM project_chats ORDER BY uid").unwrap()
+            .query_map([], |r| r.get::<_, String>(0)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(retained, [format!("{agent}:neighbor")]);
     }
 }
 

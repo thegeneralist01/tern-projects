@@ -34,6 +34,8 @@ By default, installation requires manual approval: when a newer version is avail
 
 When installing, Tern installs the latest official `main` branch and reloads the plugin; open Projects panes may close. The version shown is the last checked version, not a pinned download.
 
+Successful in-app updates show an **Updated!** toast with the installed Projects version, including after the plugin reloads and when the Projects panel is closed. Failed or unconfirmed installations do not show a success toast.
+
 For a manual update, run:
 ```sh
 tern plugin install github.com/thegeneralist01/tern-projects --force
@@ -57,6 +59,10 @@ If you use multiple AI coding agents, your sessions are scattered across hidden 
 - 🚀 **Fresh Chat Launching** — Press `⌘N` (`Ctrl+N`) to launch a new chat in your preferred CLI (`omp`, `claude`, `codex`, `pi`, `opencode`, or `cursor`).
 - 📌 **Global Pins & Recents** — Keep critical threads pinned to the top of your sidebar. Recents keeps your 15 most recent chats one click away.
 - 🗄️ **Local Archiving & Safe Deletion** — Archive threads to hide them without losing data, or permanently delete sessions via verified native CLI calls.
+
+Changing a project's name or source folders does not discard its existing indexed chats. When source folders change, existing automatic memberships (including archived chats) are retained in the durable library; project lists and scoped search keep using them after an index rebuild. New chats still follow the configured folders, so reusing an old path does not attach unrelated new chats. Explicit **Move to project** and **No project** choices take precedence. Original transcripts and their recorded working directories are not rewritten.
+
+For chats already hidden by a folder change made before this fix, find them in **All history** and use **Move to project** to restore their association.
 
 ![tern-projects details, menus, and search results](docs/screenshots/showcase-details.png)
 

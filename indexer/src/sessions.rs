@@ -1,7 +1,7 @@
 //! One projection/filter path for search, discovered folders and the curated library.
 use crate::{
     db, git,
-    library::{Library, Membership},
+    library::Library,
     model::{project_label, Assignment, SessionJson},
 };
 use anyhow::{Context, Result};
@@ -76,16 +76,17 @@ fn page(limit: i64, offset: i64) -> Result<()> {
 }
 fn members(conn: &Connection, lib: &Library, project_id: &str) -> Result<()> {
     lib.project(project_id)?;
-    let mut membership = Membership::new(lib.projects()?);
+    let mut membership = lib.membership()?;
     conn.execute_batch("CREATE TEMP TABLE project_members(uid TEXT PRIMARY KEY);")?;
     let mut stmt = conn.prepare(&format!("SELECT s.uid,s.cwd,COALESCE(cs.assignment,'automatic'),cs.project_id FROM sessions s{JOIN}WHERE {VISIBLE}"))?;
     let mut insert = conn.prepare("INSERT INTO project_members(uid) VALUES(?)")?;
     let mut records = stmt.query([])?;
     while let Some(r) = records.next()? {
+        let uid: String = r.get(0)?;
         let cwd: String = r.get(1)?;
         let assignment: String = r.get(2)?;
-        if membership.matches(project_id, &cwd, &assignment, r.get(3)?) {
-            insert.execute([r.get::<_, String>(0)?])?;
+        if membership.matches(project_id, &uid, &cwd, &assignment, r.get(3)?) {
+            insert.execute([uid])?;
         }
     }
     Ok(())
@@ -207,7 +208,7 @@ pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -
     )?;
     let projects = if view == "mine" {
         let projects = lib.projects()?;
-        let mut membership = Membership::new(lib.projects()?);
+        let mut membership = lib.membership()?;
         let mut result = Vec::with_capacity(projects.len());
         for p in projects {
             let matching: Vec<_> = sessions
@@ -215,6 +216,7 @@ pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -
                 .filter(|s| {
                     membership.matches(
                         &p.id,
+                        &s.uid,
                         &s.cwd,
                         &s.assignment.mode,
                         s.assignment

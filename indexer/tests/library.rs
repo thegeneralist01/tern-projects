@@ -373,3 +373,170 @@ fn migration_includes_live_wal_and_refuses_existing_destinations() {
         "in WAL"
     );
 }
+
+#[test]
+fn project_folder_moves_preserve_chats_search_and_explicit_choices() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let old = home.join("original");
+    let sub = old.join("sub");
+    let moved = home.join("renamed");
+    let other = home.join("other");
+    for folder in [&sub, &other] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    #[cfg(unix)]
+    let transcript_cwd = {
+        let alias = temp.path().join("home-alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        alias.join("original")
+    };
+    #[cfg(not(unix))]
+    let transcript_cwd = old.clone();
+    let source = seed(&home, "original", &transcript_cwd, 100);
+    let original_bytes = std::fs::read(&source).unwrap();
+    seed(&home, "child", &sub, 200);
+    seed(&home, "archived", &old, 300);
+    seed(&home, "excluded", &old, 400);
+    seed(&home, "assigned-away", &old, 500);
+    run(&db, &home, &["index"]);
+    let a = create(&db, &home, "Original", json!([old]));
+    let b = create(&db, &home, "Overlapping", json!([sub]));
+    let c = create(&db, &home, "Other", json!([other]));
+    for (uid, patch) in [
+        ("omp:original", json!({"pinned":true})),
+        ("omp:archived", json!({"archived":true})),
+        ("omp:excluded", json!({"assignment":{"mode":"none"}})),
+        ("omp:assigned-away", json!({"assignment":{"mode":"project","project_id":c}})),
+    ] {
+        let mut request = patch;
+        request["op"] = json!("chat-update");
+        request["uid"] = json!(uid);
+        library(&db, &home, request);
+    }
+    library(&db, &home, json!({
+        "op":"project-save","id":a,"name":"New label","icon":"code","folders":[old]
+    }));
+    assert_eq!(uids(&project(&snapshot(&db, &home), &a)["sessions"]), ["omp:child", "omp:original"]);
+    std::fs::rename(&old, &moved).unwrap();
+    // Edit both overlapping projects: retention must not turn automatic membership
+    // into a single-project override.
+    for (id, folders) in [(&a, json!([moved])), (&b, json!([moved.join("sub")]))] {
+        library(&db, &home, json!({
+            "op":"project-save","id":id,"name":"Moved","icon":"folder","folders":folders
+        }));
+    }
+    // Reusing the old path must not attach unrelated new chats to the moved project.
+    std::fs::create_dir_all(&old).unwrap();
+    seed(&home, "reused-old-path", &old, 600);
+    seed(&home, "new-location", &moved, 700);
+    run(&db, &home, &["index"]);
+    for rebuild in [false, true] {
+        if rebuild {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.pragma_update(None, "user_version", 99).unwrap();
+            drop(conn);
+            run(&db, &home, &["index"]);
+        }
+        let snap = snapshot(&db, &home);
+        assert_eq!(uids(&project(&snap, &a)["sessions"]), ["omp:new-location", "omp:child", "omp:original"]);
+        assert_eq!(uids(&project(&snap, &b)["sessions"]), ["omp:child"]);
+        assert_eq!(uids(&project(&snap, &c)["sessions"]), ["omp:assigned-away"]);
+        assert_eq!(uids(&snap["pinned"]), ["omp:original"]);
+        for text in ["", "needle"] {
+            let result = run(&db, &home, &["query", "--project-id", &a, "--q", text, "--limit", "2"]);
+            assert_eq!(result["total"], 3);
+            assert_eq!(uids(&result["sessions"]), ["omp:new-location", "omp:child"]);
+            let tail = run(&db, &home, &["query", "--project-id", &a, "--q", text, "--limit", "2", "--offset", "2"]);
+            assert_eq!(uids(&tail["sessions"]), ["omp:original"]);
+        }
+    }
+    library(&db, &home, json!({"op":"chat-update","uid":"omp:archived","archived":false}));
+    assert_eq!(project(&snapshot(&db, &home), &a)["count"], 4);
+    library(&db, &home, json!({"op":"chat-update","uid":"omp:original","assignment":{"mode":"none"}}));
+    assert_eq!(project(&snapshot(&db, &home), &a)["count"], 3);
+    library(&db, &home, json!({"op":"chat-update","uid":"omp:original","assignment":{"mode":"automatic"}}));
+    assert_eq!(project(&snapshot(&db, &home), &a)["count"], 4);
+    assert_eq!(std::fs::read(source).unwrap(), original_bytes);
+    library(&db, &home, json!({"op":"project-remove","id":a}));
+    let conn = rusqlite::Connection::open(temp.path().join("library.sqlite")).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM project_chats WHERE project_id=?",
+        [&a], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(uids(&project(&snapshot(&db, &home), &b)["sessions"]), ["omp:child"]);
+}
+
+#[test]
+fn legacy_library_migration_preserves_projects_annotations_and_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let folder = home.join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let db = temp.path().join("index.sqlite");
+    seed(&home, "legacy", &folder, 100);
+    run(&db, &home, &["index"]);
+    // An actual v1 library, not a re-labeled v2 database.
+    let conn = rusqlite::Connection::open(temp.path().join("library.sqlite")).unwrap();
+    conn.execute_batch("
+        CREATE TABLE projects(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,icon TEXT NOT NULL,created_ms INTEGER NOT NULL);
+        CREATE TABLE project_folders(project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,position INTEGER NOT NULL,path TEXT NOT NULL,PRIMARY KEY(project_id,position),UNIQUE(project_id,path));
+        CREATE TABLE chat_state(uid TEXT PRIMARY KEY,assignment TEXT NOT NULL DEFAULT 'automatic',project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,pinned_ms INTEGER,archived_ms INTEGER);
+        CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO projects VALUES(1,'Legacy','code',100);
+        INSERT INTO chat_state VALUES('omp:legacy','automatic',NULL,100,NULL);
+        INSERT INTO settings VALUES('default_harness','\"omp\"');
+        PRAGMA user_version=1;").unwrap();
+    conn.execute("INSERT INTO project_folders VALUES(1,0,?)", [folder.to_str().unwrap()]).unwrap();
+    drop(conn);
+    let snap = snapshot(&db, &home);
+    assert_eq!(project(&snap, "1")["name"], "Legacy");
+    assert_eq!(uids(&snap["pinned"]), ["omp:legacy"]);
+    assert_eq!(snap["settings"]["default_harness"], "omp");
+    let moved = home.join("moved");
+    std::fs::rename(&folder, &moved).unwrap();
+    library(&db, &home, json!({"op":"project-save","id":"1","name":"Moved","icon":"code","folders":[moved]}));
+    assert_eq!(uids(&project(&snapshot(&db, &home), "1")["sessions"]), ["omp:legacy"]);
+}
+
+#[test]
+fn malformed_legacy_library_is_not_migrated_or_overwritten() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let db = temp.path().join("index.sqlite");
+    let conn = rusqlite::Connection::open(temp.path().join("library.sqlite")).unwrap();
+    conn.execute_batch("CREATE TABLE projects(id INTEGER PRIMARY KEY,name TEXT);
+        INSERT INTO projects VALUES(1,'Keep me'); PRAGMA user_version=1;").unwrap();
+    assert!(fails(&db, &home, json!({"op":"snapshot","view":"mine","per":25,"recent":15}))
+        .contains("malformed library schema"));
+    assert_eq!(conn.query_row("SELECT name FROM projects", [], |r| r.get::<_, String>(0)).unwrap(), "Keep me");
+    assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE name='project_chats'", [],
+        |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn failed_folder_change_rolls_back_retained_membership() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let old = home.join("old");
+    let new = home.join("new");
+    for folder in [&old, &new] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let db = temp.path().join("index.sqlite");
+    seed(&home, "original", &old, 100);
+    run(&db, &home, &["index"]);
+    let id = create(&db, &home, "Original", json!([old]));
+    let conn = rusqlite::Connection::open(temp.path().join("library.sqlite")).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_folder BEFORE INSERT ON project_folders
+        BEGIN SELECT RAISE(ABORT,'fixture rejection'); END;").unwrap();
+    assert!(fails(&db, &home, json!({
+        "op":"project-save","id":id,"name":"Changed","icon":"code","folders":[new]
+    })).contains("fixture rejection"));
+    let snap = snapshot(&db, &home);
+    assert_eq!(project(&snap, &id)["name"], "Original");
+    assert_eq!(uids(&project(&snap, &id)["sessions"]), ["omp:original"]);
+    assert_eq!(conn.query_row("SELECT count(*) FROM project_chats", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}

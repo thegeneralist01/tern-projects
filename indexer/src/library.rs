@@ -114,9 +114,8 @@ impl Library {
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         conn.pragma_update(None, "foreign_keys", true)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version == 0 {
-            // Another opener may initialize the library while we wait for this lock.
-            // Only the version read under the write lock can authorize schema creation.
+        if version < 2 {
+            // Recheck under the write lock before initializing or migrating.
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
             if version == 0 {
@@ -137,15 +136,26 @@ impl Library {
                     PRAGMA user_version=1;")?;
             } else {
                 anyhow::ensure!(
-                    version == 1,
+                    version == 1 || version == 2,
                     "unsupported library schema version {version}; library was not overwritten"
                 );
+            }
+            if version < 2 {
+                validate_library(&tx)?;
+                tx.execute_batch(
+                    "CREATE TABLE project_chats(
+                        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        uid TEXT NOT NULL,
+                        PRIMARY KEY(project_id,uid)
+                    );
+                    PRAGMA user_version=2;",
+                )?;
             }
             validate_library(&tx)?;
             tx.commit()?;
         } else {
             anyhow::ensure!(
-                version == 1,
+                version == 2,
                 "unsupported library schema version {version}; library was not overwritten"
             );
             validate_library(&conn)?;
@@ -219,6 +229,7 @@ impl Library {
         folders: &[String],
         cwd: &str,
         home: &Path,
+        index: &Connection,
     ) -> Result<Value> {
         let name = name.trim();
         anyhow::ensure!(!name.is_empty(), "Name: enter a project name");
@@ -252,9 +263,47 @@ impl Library {
                 paths.push(normalized.to_string_lossy().into_owned());
             }
         }
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let project_id = if let Some(project_id) = project_id {
-            let project_id = id(project_id)?;
+            let project_key = project_id;
+            let project_id = id(project_key)?;
+            // Re-read folders under the library write lock. Keep current chat
+            // identities, not a live rule for an old path that may be reused.
+            let old_folders = {
+                let mut stmt = tx.prepare(
+                    "SELECT path FROM project_folders WHERE project_id=? ORDER BY position",
+                )?;
+                let folders = stmt.query_map([project_id], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                folders
+            };
+            anyhow::ensure!(!old_folders.is_empty(), "project no longer exists");
+            if old_folders.len() != paths.len()
+                || old_folders.iter().any(|folder| !paths.contains(folder))
+            {
+                let mut previous = old.context("missing project before folder change")?;
+                previous.folders = old_folders;
+                let mut membership = Membership::new(vec![previous]);
+                let mut sessions = index.prepare(
+                    "SELECT s.uid,s.cwd FROM sessions s
+                     LEFT JOIN library.chat_state cs ON cs.uid=s.uid
+                     WHERE COALESCE(cs.assignment,'automatic')='automatic'",
+                )?;
+                let mut records = sessions.query([])?;
+                let mut retain = tx.prepare(
+                    "INSERT OR IGNORE INTO project_chats(project_id,uid) VALUES(?,?)",
+                )?;
+                while let Some(row) = records.next()? {
+                    let uid: String = row.get(0)?;
+                    let cwd: String = row.get(1)?;
+                    if membership.matches(project_key, &uid, &cwd, "automatic", None)
+                    {
+                        retain.execute(params![project_id, uid])?;
+                    }
+                }
+            }
             tx.execute(
                 "UPDATE projects SET name=?,icon=? WHERE id=?",
                 params![name, icon, project_id],
@@ -279,6 +328,20 @@ impl Library {
         }
         tx.commit()?;
         Ok(json!({"project":self.project(&project_id.to_string())?}))
+    }
+    pub fn membership(&self) -> Result<Membership> {
+        let mut membership = Membership::new(self.projects()?);
+        let mut stmt = self.conn.prepare("SELECT project_id,uid FROM project_chats")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let project_id = row.get::<_, i64>(0)?.to_string();
+            membership
+                .retained
+                .entry(project_id)
+                .or_default()
+                .insert(row.get(1)?);
+        }
+        Ok(membership)
     }
     pub fn remove_project(&mut self, project_id: &str) -> Result<Value> {
         self.project(project_id)?;
@@ -400,8 +463,13 @@ fn validate_schema(conn: &Connection) -> Result<()> {
             ],
         ),
         ("settings", &[("key", "TEXT", 1), ("value", "TEXT", 0)]),
+        ("project_chats", &[("project_id", "INTEGER", 1), ("uid", "TEXT", 2)]),
     ];
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (table, expected) in tables {
+        if *table == "project_chats" && version < 2 {
+            continue;
+        }
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns = stmt
             .query_map([], |r| {
@@ -526,9 +594,24 @@ pub fn folders(value: &str, cwd: &str, home: &Path, offset: i64, limit: i64) -> 
 pub struct Membership {
     folders: HashMap<String, Vec<PathBuf>>,
     paths: HashMap<String, PathBuf>,
+    retained: HashMap<String, HashSet<String>>,
 }
 fn normalized(path: &str) -> PathBuf {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| lexical(Path::new(path)));
+    let path = std::fs::canonicalize(path).map(plain_path).unwrap_or_else(|_| {
+        let path = lexical(Path::new(path));
+        if path.is_absolute() {
+            // Transcripts keep the old cwd after a directory move. Resolve its
+            // surviving parent so aliases such as /var and /private/var agree.
+            for parent in path.ancestors().skip(1) {
+                if let Ok(resolved) = std::fs::canonicalize(parent) {
+                    return plain_path(resolved).join(
+                        path.strip_prefix(parent).expect("ancestor is a path prefix"),
+                    );
+                }
+            }
+        }
+        path
+    });
     #[cfg(windows)]
     {
         PathBuf::from(path.to_string_lossy().to_lowercase())
@@ -547,11 +630,13 @@ impl Membership {
         Self {
             folders,
             paths: HashMap::new(),
+            retained: HashMap::new(),
         }
     }
     pub fn matches(
         &mut self,
         project_id: &str,
+        uid: &str,
         cwd: &str,
         assignment: &str,
         assigned: Option<i64>,
@@ -560,6 +645,9 @@ impl Membership {
             "none" => false,
             "project" => project_id.parse::<i64>().ok() == assigned,
             _ => {
+                if self.retained.get(project_id).is_some_and(|uids| uids.contains(uid)) {
+                    return true;
+                }
                 if !self.paths.contains_key(cwd) {
                     self.paths.insert(cwd.to_owned(), normalized(cwd));
                 }

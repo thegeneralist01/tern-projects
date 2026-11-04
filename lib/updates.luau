@@ -25,6 +25,7 @@ type Cache = {
 	latest_version: string?,
 	failure: string?,
 	pending: Pending?,
+	completed_version: string?,
 }
 local COMMAND = "tern plugin install github.com/thegeneralist01/tern-projects --force"
 local ENDPOINT = "https://raw.githubusercontent.com/thegeneralist01/tern-projects/main/plugin.toml"
@@ -167,7 +168,8 @@ local function load(): (boolean, string?)
 		or (value.attempted_at ~= nil and not timestamp(value.attempted_at))
 		or (value.checked_at ~= nil and not timestamp(value.checked_at))
 		or (value.latest_version ~= nil and (type(value.latest_version) ~= "string" or not version_parts(value.latest_version)))
-		or (value.failure ~= nil and type(value.failure) ~= "string") then
+		or (value.failure ~= nil and type(value.failure) ~= "string")
+		or (value.completed_version ~= nil and (type(value.completed_version) ~= "string" or not version_parts(value.completed_version))) then
 		return false, "Saved update preferences are malformed."
 	end
 	if value.pending ~= nil and (type(value.pending) ~= "table" or type(value.pending.version) ~= "string"
@@ -181,6 +183,7 @@ local function load(): (boolean, string?)
 		attempted_at = value.attempted_at,
 		checked_at = value.checked_at, latest_version = value.latest_version, failure = value.failure,
 		pending = if value.pending then { version = value.pending.version, started_at = value.pending.started_at, auto = if value.pending.auto == true then true else nil } else nil,
+		completed_version = value.completed_version,
 	}
 	return true, nil
 end
@@ -232,7 +235,11 @@ local function finish_install(target: string, failure: string?, is_auto: boolean
 		failure = "Automatic installation failed: " .. failure
 	end
 	cache.failure = if failure then manual(failure) else nil
-	if not failure then cache.latest_version = installed end
+	if not failure then
+		cache.latest_version = installed
+		-- Saved with pending removal so the window can notify once after reload.
+		cache.completed_version = installed
+	end
 	local saved, save_error = save()
 	active = nil
 	state.latest_version = cache.latest_version

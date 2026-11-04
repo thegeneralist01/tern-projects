@@ -2,6 +2,14 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.10] — 2026-11-04
+
+### Added
+- **Update confirmation toast**: successful manual and automatic in-app updates show **Updated!** with the installed version, even if the Projects panel closes during reload. Failed or unconfirmed installations stay silent; acknowledged successes are not repeated on subsequent reloads.
+
+### Fixed
+- **Chats survive project folder changes**: existing indexed chats remain associated with their project when its source folders are changed or renamed, including archived chats and overlapping projects. Retained associations survive reindexing and apply to project-scoped search; explicit assignment choices still take precedence. Reusing the old path does not pull unrelated new chats into the project. Historical missing paths resolve through surviving parents, including macOS filesystem aliases. Original transcripts are unchanged.
+
 ## [0.2.9] — 2026-11-03
 
 ### Changed

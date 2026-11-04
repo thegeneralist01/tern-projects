@@ -127,8 +127,41 @@ local function migrate_keybinds(cx: SessionContext)
 	end
 end
 
+-- The installer reloads the plugin and can close its panel. Deliver from the
+-- window instead, acknowledging separately so updater preferences stay host-owned.
+local function update_toast(cx: SessionContext, remaining: number)
+	local ok, record = pcall(tern.kv.get, "plugin-updates:v1")
+	if not ok or type(record) ~= "table" then return end
+	if record.pending then
+		if remaining > 0 then
+			tern.timer(2000, function(next_cx: SessionContext)
+				update_toast(next_cx, remaining - 1)
+			end)
+		end
+		return
+	end
+	if record.failure then return end
+	local version = record.completed_version
+	if type(version) ~= "string" then return end
+	local read, acknowledged = pcall(tern.kv.get, "plugin-update-toast:v1")
+	if not read or acknowledged == version then return end
+	-- Record delivery before showing to avoid replay on subsequent reloads.
+	local saved, err = pcall(tern.kv.set, "plugin-update-toast:v1", version)
+	if not saved then
+		tern.log.error("Cannot acknowledge plugin update toast: " .. tostring(err))
+		return
+	end
+	cx:toast("success", "Updated!", "Projects " .. version)
+end
+
 tern.on("window_start", function(cx: SessionContext)
 	migrate_keybinds(cx)
+end)
+
+-- Module load also runs on plugin reload; window_start may already have fired.
+-- Poll only while an installation is pending, for at most 130 seconds.
+tern.timer(500, function(cx: SessionContext)
+	update_toast(cx, 65)
 end)
 
 tern.command({

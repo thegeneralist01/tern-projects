@@ -255,6 +255,7 @@ fn cleanup_cache(db_path: &Path, chat: &Chat, plan: &Plan) -> Result<Vec<String>
     let _library = crate::library::Library::open(db_path)?;
     let mut conn =
         Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     conn.execute(
         "ATTACH DATABASE ?1 AS library",
         params![crate::library::path(db_path).to_string_lossy()],
@@ -273,6 +274,7 @@ fn cleanup_cache(db_path: &Path, chat: &Chat, plan: &Plan) -> Result<Vec<String>
             crate::db::delete_by_source(&tx, &source)?;
             tx.execute("DELETE FROM sources WHERE source=?1", [&source])?;
             tx.execute("DELETE FROM library.chat_state WHERE uid=?1", [&uid])?;
+            tx.execute("DELETE FROM library.project_chats WHERE uid=?1", [&uid])?;
             uids.push(uid);
         }
         let source = match chat.agent.as_str() {
@@ -286,6 +288,7 @@ fn cleanup_cache(db_path: &Path, chat: &Chat, plan: &Plan) -> Result<Vec<String>
         // A child annotation can outlive its disposable cache row.
         let uid = format!("{}:{}", chat.agent, id);
         tx.execute("DELETE FROM library.chat_state WHERE uid=?1", [&uid])?;
+        tx.execute("DELETE FROM library.project_chats WHERE uid=?1", [&uid])?;
         if !uids.contains(&uid) {
             uids.push(uid);
         }
@@ -301,6 +304,7 @@ fn cleanup_cache(db_path: &Path, chat: &Chat, plan: &Plan) -> Result<Vec<String>
             tx.execute("DELETE FROM sources WHERE source=?1", [&source])?;
             for uid in owned_uids {
                 tx.execute("DELETE FROM library.chat_state WHERE uid=?1", [&uid])?;
+                tx.execute("DELETE FROM library.project_chats WHERE uid=?1", [&uid])?;
                 if !uids.contains(&uid) {
                     uids.push(uid);
                 }
