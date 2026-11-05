@@ -72,8 +72,22 @@ function backend.ensure(cb: (string?, string?) -> ())
 	end
 	local home = tern.getenv("HOME") or tern.getenv("USERPROFILE") or ""
 	local cargoHome = tern.getenv("CARGO_HOME") or (home .. "/.cargo")
-	local cargo = cargoHome .. "/bin/cargo" .. (tern.runtime.os == "windows" and ".exe" or "")
-	if not tern.fs.exists(cargo) then cargo = "cargo" end
+	local ext = if tern.runtime.os == "windows" then ".exe" else ""
+	local cargo = cargoHome .. "/bin/cargo" .. ext
+	-- Rust isn't always under CARGO_HOME (e.g. Homebrew or distro packages),
+	-- and a bare "cargo" falls back to the plugin's PATH, which may lack it.
+	for _, candidate in { "/opt/homebrew/bin/cargo", "/usr/local/bin/cargo", "/usr/bin/cargo" } do
+		if not tern.fs.exists(cargo) and tern.fs.exists(candidate) then cargo = candidate end
+	end
+	if not tern.fs.exists(cargo) then cargo = "cargo" .. ext end
+	-- `tern.process.run` replaces the environment wholesale; cargo needs a
+	-- PATH to locate rustc and build tools, plus the directory cargo itself
+	-- lives in (e.g. a Homebrew install outside the plugin's PATH).
+	local pathSep = if tern.runtime.os == "windows" then ";" else ":"
+	local cargoDir = cargo:match("^(.+)[/\\][^/\\]*$") or ""
+	-- Keep the plugin's PATH and system tools for compilers/linkers.
+	local envPath = (tern.getenv("PATH") or "") .. pathSep .. "/usr/bin" .. pathSep .. "/bin"
+	if cargoDir ~= "" then envPath = cargoDir .. pathSep .. envPath end
 	local function compile(env: { [string]: string }?)
 		local started, err = pcall(tern.process.run, { cargo, "build", "--release", "--locked", "--manifest-path", tern.plugin.dir .. "/indexer/Cargo.toml", "--target-dir", root }, { timeout_ms = 1200000, env = env }, function(result)
 			if finished then return end
@@ -107,6 +121,7 @@ function backend.ensure(cb: (string?, string?) -> ())
 			compile({
 				SDKROOT = sdk,
 				CC = "/usr/bin/clang",
+				PATH = envPath,
 				CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = "/usr/bin/clang",
 				CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER = "/usr/bin/clang",
 			})
