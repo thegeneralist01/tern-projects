@@ -14,7 +14,7 @@ docs/                Documentation and technical guides
   adding-a-harness.md Step-by-step guide for implementing new assistant adapters
   screenshots/       Showcase images for README and documentation
 host.luau            Host process half: starts update checks and registers the panel block
-window.luau          Window process half: keybind migration, toggles, launch/resume routes
+window.luau          Window process half: keybind migration/discovery, native settings, toggles, launch/resume routes
 blocks/panel.luau    Main UI: Projects (My Projects / Discovered), Search, Settings
 lib/backend.luau     Automatic Cargo build at host startup, binary cache, request queuing
 lib/cli.luau         CLI invocation, JSON decoding, deletion/update coordination
@@ -108,6 +108,11 @@ tern plugin reload                               # Reload plugin in running Tern
   - OMP history cleanup accepts only verified table/FTS schemas and bounded indexing triggers, deletes exact binary-matched session IDs and verified owned dependents, and preserves unattributed history. Unknown triggers, foreign-key dependencies, or ambiguous indexed/unindexed dependent identities refuse deletion.
   - OMP confirmation is revalidated after acquiring the history write lock with a 5000ms busy timeout; SQL deletion and FTS repair must succeed before transcript removal. Filesystem removals and SQLite commit are not crash-atomic; partial failures are reported without automatic retry.
   - Never delete user project files, repositories, or worktrees during chat deletion.
+- **Keyboard Shortcuts**:
+  - Global shortcuts remain Tern-owned (`settings.json` `keybinds`). The window reports `cx.actions:keys()` effective bindings to Settings; the plugin never stores a second keymap in the library, KV, or saved pane state.
+  - `tern-projects://shortcuts?`, `keyboard?`, and `keyconfig?` require a live focused Projects panel in the calling window. They respectively report the keymap or invoke only the fixed `preferences` / `open_config` commands; no arbitrary command or file path is accepted.
+  - Settings requests a keymap snapshot every second while open. Pane/generation liveness stops stale polling, and identical snapshots do not redraw or disturb dialogs. Panel-only navigation and actions remain a separate fixed reference.
+  - Tern’s native Keyboard editor may omit unbound plugin actions; Settings exposes their copyable IDs and the native settings-file command without inventing replacement defaults.
 - **Launch and Resume Contracts**:
   - Fresh chats launch with the primary project directory as `cwd`. Any additional folders are passed via harness-supported CLI flags (e.g. `--add-dir`), or a warning is surfaced before launching primary-only.
   - Command generation must be safely quoted per OS (`shell_join` on Unix, Base64-encoded command blocks on Windows).

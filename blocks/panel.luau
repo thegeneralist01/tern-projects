@@ -918,6 +918,19 @@ local function activate(s: any, key: string?)
 		enter_search(s)
 	end
 end
+-- Keymaps live in the window, not the host. Refresh only while Settings is
+-- open; responses are read-only and identical snapshots do not redraw.
+local function watch_shortcuts(s: any)
+	s.shortcut_watch = (s.shortcut_watch or 0) + 1
+	local generation = s.shortcut_watch
+	local function tick()
+		if not live(s) or s.mode ~= "settings" or s.shortcut_watch ~= generation then return end
+		s.cx:open("tern-projects://shortcuts?")
+		tern.timer(1000, tick)
+	end
+	tick()
+end
+
 local function change_mode(s: any, mode: string)
 	if mode == "search" then
 		if s.search_cwd then s.search_cwd = nil end
@@ -926,6 +939,7 @@ local function change_mode(s: any, mode: string)
 	end
 	cancel_flow(s)
 	s.mode = mode; s.page = 0; s.settings_focus = nil
+	if mode == "settings" then watch_shortcuts(s) end
 	rebuild(s); reload(s)
 	s.cx:frame({{"focus", NULL}})
 end
@@ -937,7 +951,7 @@ end
 
 -- Actions ------------------------------------------------------------------------------------
 
-local SETTINGS = {"default", "icons", "archived", "refresh", "update-auto", "update-auto-install", "update-check", "update-install", "update-copy"}
+local SETTINGS = {"default", "icons", "archived", "refresh", "update-auto", "update-auto-install", "update-check", "update-install", "update-copy", "shortcut-projects", "shortcut-search", "shortcut-settings", "keyboard", "keyconfig"}
 local function update_busy(snapshot: any): boolean
 	return snapshot.status == "checking" or snapshot.status == "installing"
 end
@@ -1146,6 +1160,15 @@ action = function(s: any, act: string, value: string?)
 		toast(s, "info", "New chat cancelled")
 		return
 	end
+	if act == "keyboard" or act == "keyconfig" then
+		s.settings_focus = act
+		s.cx:open("tern-projects://" .. act .. "?")
+		return
+	elseif act == "shortcut-copy" and (value == "projects" or value == "search" or value == "settings") then
+		s.settings_focus = "shortcut-" .. value
+		copy(s, "plugin.tern-projects." .. value, "shortcut action ID")
+		return
+	end
 	-- Plugin updates do not depend on the Rust backend or its mutation state.
 	if act == "update-review" then
 		change_mode(s, "settings"); s.settings_focus = "update-install"; return
@@ -1271,7 +1294,8 @@ local function settings_key(s: any, k: Key): boolean
 		elseif f == "icons" then action(s, "icon-style", nil)
 		elseif f == "archived" then action(s, "archived", nil)
 		elseif f == "refresh" then refresh(s)
-		elseif f == "update-auto" or f == "update-auto-install" or f == "update-check" or f == "update-install" or f == "update-copy" then action(s, f, nil) end
+		elseif f == "update-auto" or f == "update-auto-install" or f == "update-check" or f == "update-install" or f == "update-copy" or f == "keyboard" or f == "keyconfig" then action(s, f, nil)
+		elseif string.sub(f, 1, 9) == "shortcut-" then action(s, "shortcut-copy", string.sub(f, 10)) end
 		return true
 	end
 	return false
@@ -1525,6 +1549,20 @@ local function updates_view(s: any): any
 		c.button("Copy command", "update-copy", {size = "sm", icon = "copy", focused = f == "update-copy", title = snapshot.command})))
 	return ui.el("div", {key = "updates", class = "tp-card"}, rows)
 end
+local function shortcut_keys(chords: {string}?): any
+	if not chords then return c.note("Loading…") end
+	if #chords == 0 then return c.note("Not bound") end
+	local keys = {}
+	for i, chord in chords do
+		if i > 1 then table.insert(keys, ui.el("span", {text = "or", class = "tp-note"})) end
+		for j, step in string.split(chord, ">") do
+			if j > 1 then table.insert(keys, ui.el("span", {text = "then", class = "tp-note"})) end
+			table.insert(keys, ui.node("kbd", {keys = string.split(step, "+")}))
+		end
+	end
+	return ui.el("div", {class = "tp-shortcut-keys"}, keys)
+end
+
 local function settings_view(s: any): any
 	local f = s.settings_focus
 	local default = s.settings.default_harness
@@ -1532,9 +1570,18 @@ local function settings_view(s: any): any
 	local index_desc = if s.indexing then "Indexing chat history…" elseif s.indexed_at then "Updated " .. fmt.ago(s.indexed_at * 1000) .. " · every 2 min" else "Updated automatically · every 2 min"
 	local archived = s.archived_total
 	local mod = if tern.runtime.os == "macos" then "cmd" else "ctrl"
+	local global_keys = {}
+	for _, sc in {{"projects", "Open Projects"}, {"search", "Search everywhere"}, {"settings", "Projects Settings"}} do
+		table.insert(global_keys, ui.el("div", {key = sc[1], class = "tp-kbd-row"}, {
+			ui.el("span", {text = sc[2]}),
+			ui.el("div", {class = "tp-shortcut-controls"}, {
+				if s.shortcut_error then c.note("Unavailable")
+					else shortcut_keys(s.shortcut_bindings and s.shortcut_bindings[sc[1]]),
+				c.icon_button("copy", "shortcut-copy=" .. sc[1], "Copy action ID for " .. sc[2], {size = "xs", variant = "ghost", focused = f == "shortcut-" .. sc[1]}),
+			}),
+		}))
+	end
 	local shortcuts = {
-		{"Open Projects", if tern.runtime.os == "macos" then {"alt", "cmd", "s"} else {"ctrl", "alt", "s"}},
-		{"Search everywhere", if tern.runtime.os == "macos" then {"ctrl", "alt", "cmd", "s"} else {"ctrl", "alt", "shift", "s"}},
 		{"Search from Projects / Settings", {"/"}},
 		{"Cycle Mine / Discovered / Search / Settings", {"tab"}},
 		{"Cycle views backwards", {"shift", "tab"}},
@@ -1573,7 +1620,18 @@ local function settings_view(s: any): any
 		}),
 		ui.el("div", {class = "tp-sec-t", text = "Plugin updates"}),
 		updates_view(s),
-		ui.el("div", {class = "tp-sec-t", text = "Keyboard"}),
+		ui.el("div", {class = "tp-sec-t", text = "Global shortcuts"}),
+		ui.el("div", {class = "tp-card tp-keys"}, global_keys),
+		ui.el("div", {class = "tp-card"}, {
+			setting_row("keyboard", f == "keyboard", "Customize shortcuts", "In Tern Settings, choose Keyboard and search for Projects.",
+				c.button("Edit in Tern", "keyboard", {size = "sm", focused = f == "keyboard"})),
+			setting_row("keyconfig", f == "keyconfig", "Unbound commands", "Tern may omit these from Keyboard. Copy an action ID above and add it to keybinds in settings.json.",
+				c.button("Open settings.json", "keyconfig", {size = "sm", focused = f == "keyconfig"})),
+		}),
+		c.note(if s.shortcut_error then "Could not read Tern’s shortcuts: " .. s.shortcut_error
+			else "Shows Tern’s effective shortcuts, including presets and your overrides."),
+		ui.el("div", {class = "tp-sec-t", text = "Panel controls"}),
+		c.note("These controls apply inside the Projects panel and are not changed in Tern’s shortcut editor."),
 		ui.el("div", {class = "tp-card tp-keys"}, keys),
 	})
 end
@@ -1703,6 +1761,7 @@ local panel: BlockDef<any> = {
 			s.cx:render()
 		end)
 		rebuild(s)
+		if s.mode == "settings" then watch_shortcuts(s) end
 		refresh(s)
 		local function tick()
 			tern.timer(120000, function() if not live(s) then s.alive = false; return end; refresh(s); tick() end)
@@ -1820,6 +1879,17 @@ local panel: BlockDef<any> = {
 	end,
 	event = function(s, ev, cx)
 		local id, name = ev.id or "", ev.ev
+		if name == "action" and ev.act == "shortcut-state" then
+			if s.mode ~= "settings" or s.shortcut_payload == ev.value then return end
+			local ok, data = pcall(tern.json.decode, ev.value or "")
+			if ok and type(data) == "table" then
+				s.shortcut_payload = ev.value
+				s.shortcut_bindings = data.bindings
+				s.shortcut_error = data.error
+				cx:render()
+			end
+			return
+		end
 		if s.menu and string.sub(id, 1, 11) ~= "layer.menu." and id ~= "layer.menu" then s.menu = nil end
 		if name == "focus" or name == "edit" then
 			if s.busy then return end

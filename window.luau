@@ -199,12 +199,44 @@ tern.on("pane_closed", function(ev: any, _cx: any)
 	prev_focus[ev.pane] = nil
 end)
 
+local function publish_shortcuts(cx: SessionContext, pane: number)
+	local ok, keymap = pcall(function() return cx.actions:keys() end)
+	local bindings: {[string]: {string}} = {projects = {}, search = {}, settings = {}}
+	if ok then
+		for chord, actions in keymap do
+			for _, id in actions do
+				local name = string.match(id, "^plugin%.tern%-projects%.([a-z]+)$")
+				if name and bindings[name] then table.insert(bindings[name], chord) end
+			end
+		end
+		for _, chords in bindings do table.sort(chords) end
+	end
+	cx.session:event(pane, {
+		ev = "action", id = "main", act = "shortcut-state",
+		value = tern.json.encode(if ok then {bindings = bindings} else {error = tostring(keymap)}),
+	})
+end
+
 -- Host-generated commands must execute only on the originating local window.
 tern.route.link(function(link: any, cx: SessionContext)
 	local route, q = string.match(link.url, "^tern%-projects://([a-z]+)%?(.*)$")
-	if route ~= "resume" and route ~= "launch" then return nil end
+	if route ~= "resume" and route ~= "launch" and route ~= "shortcuts" and route ~= "keyboard" and route ~= "keyconfig" then return nil end
 	if link.pane == nil then return { handled = true } end
 	local origin = find_pane(cx, link.pane)
+	if route == "shortcuts" or route == "keyboard" or route == "keyconfig" then
+		if origin == nil or origin.block ~= KIND or cx.session:focused() ~= link.pane then
+			return { handled = true }
+		end
+		if route == "shortcuts" then
+			publish_shortcuts(cx, link.pane)
+		elseif route == "keyconfig" then
+			cx:command("open_config")
+		else
+			cx:command("preferences")
+			cx:toast("info", "Customize Projects shortcuts", "Choose Keyboard and search for Projects.")
+		end
+		return { handled = true }
+	end
 	local key = ""
 	local pending: any = nil
 	if route == "launch" then

@@ -2,6 +2,11 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.11] — 2026-11-05
+
+### Added
+- **Native shortcut customization**: Projects Settings shows Tern’s actual global bindings, including user overrides, unbound commands, multiple shortcuts, and key sequences. **Edit in Tern** opens native Settings; copyable action IDs and **Open settings.json** cover unbound commands absent from Tern’s Keyboard page. Panel-only controls remain a separately labeled reference, with no second shortcut configuration.
+
 ## [0.2.10] — 2026-11-04
 
 ### Added

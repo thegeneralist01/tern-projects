@@ -70,7 +70,7 @@ For chats already hidden by a folder change made before this fix, find them in *
 
 ## Keyboard-First Controls
 
-Optimized for speed and one-handed navigation:
+Default controls are listed below. Tern’s preset and your overrides can change global shortcuts; **Settings → Global shortcuts** shows the bindings actually in effect.
 
 | Action | macOS | Windows / Linux |
 |---|---|---|
@@ -87,6 +87,26 @@ Optimized for speed and one-handed navigation:
 | **Dismiss / Clear search / Close modal** | `Esc` | `Esc` |
 
 Inside any text field, standard terminal editing shortcuts just work (`⌘A`/`Ctrl+A` select all, `⌘⌫`/`Ctrl+U` delete line prefix, `⌥⌫`/`Ctrl+⌫` delete word).
+
+### Customize global shortcuts
+
+In Projects Settings, scroll to **Global shortcuts** and choose **Edit in Tern**. In Tern Settings, choose **Keyboard** and search for **Projects**. Use Tern’s shortcut recorder to add or remove bindings. Projects refreshes the displayed bindings while its Settings page is open, including multiple shortcuts and key sequences.
+
+Tern currently omits some unbound plugin commands from its Keyboard page. For those, use the copy button beside the command, then **Open settings.json**. Merge the desired entries into your existing `keybinds` object, for example:
+
+```json
+{
+  "keybinds": {
+    "ctrl+alt+p": "plugin.tern-projects.projects",
+    "ctrl+alt+shift+p": "plugin.tern-projects.search",
+    "ctrl+alt+shift+o": "plugin.tern-projects.settings"
+  }
+}
+```
+
+These are examples, not new defaults. User bindings replace an occupied chord, so choose keys deliberately. Tern owns persistence and keymap precedence; Projects does not keep a separate shortcut configuration. See [Tern’s keymap layering](https://docs.stencil.so/tern/guides/commands.html#keymap-layering).
+
+**Panel controls** such as arrows, Tab, New chat, and Refresh remain fixed, apply only inside the panel, and are listed separately from editable global shortcuts.
 
 ---
 
