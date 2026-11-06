@@ -13,6 +13,7 @@ CONTRIBUTING.md      Development workflows and PR guidelines
 LICENSE              Repository license
 docs/                Documentation and technical guides
   adding-a-harness.md Step-by-step guide for implementing new assistant adapters
+  contributors/      Circular, bordered contributor portraits for the README
   screenshots/       Showcase images for README and documentation
 host.luau            Host process half: starts update checks and registers the panel block
 window.luau          Window process half: keybind migration/discovery, native settings, toggles, launch/resume routes
