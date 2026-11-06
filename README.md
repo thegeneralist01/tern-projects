@@ -143,6 +143,18 @@ Contributions are welcome! Whether you are fixing a bug, improving Luau block pe
 
 ---
 
+## Contributors
+
+Thanks to everyone who has contributed to tern-projects.
+
+<p>
+<a href="https://github.com/flosrn"><img src="https://github.com/flosrn.png?size=96" width="48" height="48" alt="@flosrn" title="@flosrn"></a>
+<a href="https://github.com/lumiarna"><img src="https://github.com/lumiarna.png?size=96" width="48" height="48" alt="@lumiarna" title="@lumiarna"></a>
+<a href="https://github.com/Zestful-ss"><img src="https://github.com/Zestful-ss.png?size=96" width="48" height="48" alt="@Zestful-ss" title="@Zestful-ss"></a>
+</p>
+
+---
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
