@@ -79,7 +79,7 @@ Install [Luau 0.745](https://github.com/luau-lang/luau/releases/tag/0.745) (`lua
 
 Rust formatting and existing style/dead-code warnings are not gates in this workflow; the current tree does not have a clean strict-formatting/`-D warnings` baseline. Keep changes focused rather than reformatting unrelated code.
 
-Integration fixtures must work from a clean checkout on every matrix platform: select platform-specific storage paths, serialize filesystem paths into JSON rather than interpolating them, and generate synthetic Git metadata inside the temporary home instead of relying on nested `.git` files being tracked.
+Integration fixtures must work from a clean checkout on every matrix platform: select platform-specific storage paths, serialize filesystem paths into JSON rather than interpolating them, compare filesystem roots as paths rather than separator-sensitive strings, and generate synthetic Git metadata inside the temporary home instead of relying on nested `.git` files being tracked.
 
 ---
 

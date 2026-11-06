@@ -450,12 +450,12 @@ fn test_worktree_scope() {
         "--cwd", &wt_cwd,
     ]);
     let proj_sessions = q_proj["sessions"].as_array().unwrap();
-    let repo_root = home.join("repos/myrepo").to_string_lossy().into_owned();
+    let repo_root = home.join("repos/myrepo");
     let all_in_proj = proj_sessions.iter().all(|s| {
         let pr = s["project_root"].as_str().unwrap_or("");
-        pr == repo_root
+        Path::new(pr) == repo_root.as_path()
     });
-    assert!(all_in_proj, "project scope sessions outside project root");
+    assert!(all_in_proj, "project scope sessions outside project root {repo_root:?}: {proj_sessions:?}");
 }
 
 #[test]
