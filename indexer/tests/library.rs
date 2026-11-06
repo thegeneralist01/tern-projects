@@ -132,9 +132,12 @@ fn membership_overrides_pins_archive_and_rebuild_are_consistent() {
     let b = create(&db, &home, "B", json!([sub]));
     let c = create(&db, &home, "C", json!([empty]));
     let snap = snapshot(&db, &home);
-    assert_eq!(
-        project(&snap, &a)["folders"],
-        json!([app.canonicalize().unwrap(), backend.canonicalize().unwrap()])
+    let folders = project(&snap, &a)["folders"].as_array().unwrap();
+    assert!(
+        folders.iter()
+            .map(|folder| std::fs::canonicalize(folder.as_str().unwrap()).unwrap())
+            .eq([app.canonicalize().unwrap(), backend.canonicalize().unwrap()]),
+        "project folders must resolve to app, then backend: {folders:?}"
     );
     assert_eq!(
         uids(&project(&snap, &a)["sessions"]),

@@ -88,7 +88,7 @@ tern plugin link .                               # Link plugin to local Tern ins
 tern plugin reload                               # Reload plugin in running Tern instance
 ```
 
-CI runs on every PR, pushes to `main`, and manual dispatch. Rust tests and correctness/suspicious-pattern Clippy gates run on Linux, macOS, and Windows. Luau checks compile runtime files at the root and under `blocks/` and `lib/`, excluding generated declaration files; this is not SDK type checking or native UI verification. Formatting and style/dead-code warnings are not gates until a clean baseline is established. `PR checks` aggregates every job and fails on failure, cancellation, or skips; use that stable status for branch protection. Keep fork runs secret-free, permissions read-only, checkout credentials unpersisted, actions commit-pinned, and downloaded tools checksum-verified. See `CONTRIBUTING.md` for local setup.
+CI runs on every PR, pushes to `main`, and manual dispatch. Rust tests and correctness/suspicious-pattern Clippy gates run on Linux, macOS (Intel), and Windows. Luau checks compile runtime files at the root and under `blocks/` and `lib/`, excluding generated declaration files; this is not SDK type checking or native UI verification. Formatting and style/dead-code warnings are not gates until a clean baseline is established. `PR checks` aggregates every job and fails on failure, cancellation, or skips; use that stable status for branch protection. Keep fork runs secret-free, permissions read-only, checkout credentials unpersisted, actions commit-pinned, and downloaded tools checksum-verified. See `CONTRIBUTING.md` for local setup.
 
 ## Core Invariants
 

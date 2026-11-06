@@ -5,10 +5,10 @@ All notable changes to `tern-projects` will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Pull request checks**: GitHub Actions runs backend tests and Clippy correctness/suspicious-pattern checks on Linux, macOS, and Windows, compiles runtime Luau and enforces strict headers, and validates workflows and shell scripts. A stable **PR checks** status aggregates the results; fork runs require no secrets and use read-only permissions and pinned, verified tools.
+- **Pull request checks**: GitHub Actions runs backend tests and Clippy correctness/suspicious-pattern checks on Linux, macOS (Intel), and Windows, compiles runtime Luau and enforces strict headers, and validates workflows and shell scripts. A stable **PR checks** status aggregates the results; fork runs require no secrets and use read-only permissions and pinned, verified tools.
 
 ### Changed
-- **Portable integration fixtures**: select Cursor storage by platform, JSON-escape Windows worktree paths, compare repository roots as filesystem paths rather than separator-sensitive strings, and generate synthetic Git metadata inside the temporary home for clean CI checkouts.
+- **Portable integration fixtures**: select Cursor storage by platform, JSON-escape Windows worktree paths, compare folder and repository roots without platform-specific spelling assumptions, and generate synthetic Git metadata inside the temporary home for clean CI checkouts.
 
 ## [0.2.12] — 2026-11-06
 

@@ -58,7 +58,7 @@ Whenever you modify Rust code in `indexer/`, run `./scripts/build.sh` (or `cargo
 
 [CI](.github/workflows/ci.yml) runs on every pull request, pushes to `main`, and manual dispatch:
 
-- **Rust**: locked-dependency tests and Clippy correctness/suspicious-pattern checks on Linux, macOS, and Windows.
+- **Rust**: locked-dependency tests and Clippy correctness/suspicious-pattern checks on Linux, macOS (Intel), and Windows. The explicit `macos-15-intel` runner avoids arm64 runner-allocation failures.
 - **Luau**: compile runtime sources at the repository root and under `blocks/` and `lib/`, and require `--!strict` on the first line. Generated `*.d.luau` declarations are excluded. This checks syntax, not Tern SDK types or native UI behavior.
 - **Workflows and shell**: actionlint validates GitHub Actions, including embedded shell commands; ShellCheck checks `scripts/*.sh`.
 - **PR checks**: a stable aggregate status that fails if any dependency fails, is cancelled, or is skipped. Configure this status as required in the repository's `main` branch ruleset to block merges.
