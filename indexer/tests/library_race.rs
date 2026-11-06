@@ -91,9 +91,12 @@ fn concurrent_first_index_snapshot_query_and_save_preserve_library() {
         assert_eq!(projects[0]["id"], saved_id);
         assert_eq!(projects[0]["name"], "Saved during first open");
         assert_eq!(projects[0]["icon"], "rocket");
-        assert_eq!(
-            projects[0]["folders"],
-            json!([std::fs::canonicalize(&folder).unwrap()])
+        let folders = projects[0]["folders"].as_array().unwrap();
+        assert!(
+            folders.iter()
+                .map(|path| std::fs::canonicalize(path.as_str().unwrap()).unwrap())
+                .eq([std::fs::canonicalize(&folder).unwrap()]),
+            "saved project folder changed during concurrent first open: {folders:?}"
         );
         assert_eq!(projects[0]["count"], 0);
         let conn = rusqlite::Connection::open(temp.path().join("library.sqlite")).unwrap();
