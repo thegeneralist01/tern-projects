@@ -24,6 +24,8 @@ tern plugin install github.com/thegeneralist01/tern-projects
 
 Tern fetches the plugin, and the background engine builds automatically on first load. Rust/Cargo and your platform's native C build tools are required; no manual compile step is needed.
 
+Cargo discovery checks absolute entries in Tern's host `PATH` first, then `$CARGO_HOME/bin` (or `~/.cargo/bin`) and common Unix installation locations, including Homebrew. The build environment includes the resolved Cargo directory so `rustc` and sibling tools remain available even when the GUI host has a limited `PATH`.
+
 On macOS, install Apple developer tools (`xcode-select --install` if needed) or select your Xcode installation. Automatic builds use the SDK selected by `xcrun --sdk macosx` and Apple's compiler/linker, rather than mixing an unrelated `cc` from `PATH` with a different SDK.
 
 ### Updates

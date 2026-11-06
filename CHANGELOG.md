@@ -2,6 +2,12 @@
 
 All notable changes to `tern-projects` will be documented in this file.
 
+## [0.2.12] — 2026-11-06
+
+### Fixed
+- **Rust toolchain discovery and builds**: honor Cargo installations selected through the host's `PATH` before checking Cargo home and common Unix installation locations, including Homebrew. Add the resolved Cargo directory to the build `PATH` across platforms so Cargo can find `rustc` and sibling tools, while preserving Apple's SDK/compiler overrides on macOS.
+- Thanks to [@lumiarna](https://github.com/lumiarna) for their first contribution in [PR #1](https://github.com/thegeneralist01/tern-projects/pull/1).
+
 ## [0.2.11] — 2026-11-05
 
 ### Added
