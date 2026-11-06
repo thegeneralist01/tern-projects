@@ -5,6 +5,7 @@ A high-level guide for AI agents working in this repository.
 ## Repo layout
 
 ```
+.github/workflows/ci.yml  PR/main checks: Rust platform matrix, Luau compilation, workflow/shell linting
 plugin.toml          Tern plugin manifest
 styles.css           Theme & layout styling for panel surfaces
 CHANGELOG.md         Release history and notable changes
@@ -38,6 +39,7 @@ indexer/             Rust backend (`tern-projects` CLI binary)
   src/adapters/      Session adapters for harnesses (claude, codex, omp, pi, opencode, cursor)
   tests/             Real-binary integration test suites with isolated environments
 scripts/build.sh     Build helper: compiles release binary to bin/
+scripts/check-luau.py  Compile runtime Luau and enforce strict headers (requires luau-compile)
 bin/tern-projects    Compiled binary (gitignored)
 tern.d.luau          Generated Tern type stubs (gitignored)
 ```
@@ -76,11 +78,17 @@ This repository uses Jujutsu (`.jj`) as its primary version-control interface.
 
 ```sh
 ./scripts/build.sh                                # Build release binary into bin/tern-projects
-cargo test --manifest-path indexer/Cargo.toml     # Run backend unit and integration tests
+cargo test --locked --manifest-path indexer/Cargo.toml  # Run backend unit and integration tests
+cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
+python3 scripts/check-luau.py                      # Requires luau-compile 0.745 on PATH
+actionlint                                       # Validate GitHub Actions (1.7.12)
+shellcheck scripts/*.sh                          # Check shell scripts (0.11.0)
 tern plugin types .                              # Regenerate tern.d.luau after Tern updates
 tern plugin link .                               # Link plugin to local Tern instance
 tern plugin reload                               # Reload plugin in running Tern instance
 ```
+
+CI runs on every PR, pushes to `main`, and manual dispatch. Rust tests and correctness/suspicious-pattern Clippy gates run on Linux, macOS, and Windows. Luau checks compile runtime files at the root and under `blocks/` and `lib/`, excluding generated declaration files; this is not SDK type checking or native UI verification. Formatting and style/dead-code warnings are not gates until a clean baseline is established. `PR checks` aggregates every job and fails on failure, cancellation, or skips; use that stable status for branch protection. Keep fork runs secret-free, permissions read-only, checkout credentials unpersisted, actions commit-pinned, and downloaded tools checksum-verified. See `CONTRIBUTING.md` for local setup.
 
 ## Core Invariants
 

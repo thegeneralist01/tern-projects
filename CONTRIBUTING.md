@@ -54,6 +54,33 @@ tern plugin list --json
 
 Whenever you modify Rust code in `indexer/`, run `./scripts/build.sh` (or `cargo test --manifest-path indexer/Cargo.toml`) to compile and test. Tern automatically reloads Luau and CSS changes when saved.
 
+### Pull request checks
+
+[CI](.github/workflows/ci.yml) runs on every pull request, pushes to `main`, and manual dispatch:
+
+- **Rust**: locked-dependency tests and Clippy correctness/suspicious-pattern checks on Linux, macOS, and Windows.
+- **Luau**: compile runtime sources at the repository root and under `blocks/` and `lib/`, and require `--!strict` on the first line. Generated `*.d.luau` declarations are excluded. This checks syntax, not Tern SDK types or native UI behavior.
+- **Workflows and shell**: actionlint validates GitHub Actions, including embedded shell commands; ShellCheck checks `scripts/*.sh`.
+- **PR checks**: a stable aggregate status that fails if any dependency fails, is cancelled, or is skipped. Configure this status as required in the repository's `main` branch ruleset to block merges.
+
+Fork PRs need no secrets. The workflow uses read-only repository permissions, checkout without persisted credentials, a commit-pinned action, and checksum-verified tool downloads. GitHub may still require a maintainer to approve runs from first-time contributors.
+
+Run the same checks locally:
+
+```sh
+cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
+cargo test --locked --manifest-path indexer/Cargo.toml
+python3 scripts/check-luau.py
+actionlint
+shellcheck scripts/*.sh
+```
+
+Install [Luau 0.745](https://github.com/luau-lang/luau/releases/tag/0.745) (`luau-compile`), [actionlint 1.7.12](https://github.com/rhysd/actionlint/releases/tag/v1.7.12), and [ShellCheck 0.11.0](https://github.com/koalaman/shellcheck/releases/tag/v0.11.0) on your `PATH`. The Luau checker also accepts `--compiler /path/to/luau-compile`. Keep tool versions and Linux archive checksums together in the workflow when upgrading them.
+
+Rust formatting and existing style/dead-code warnings are not gates in this workflow; the current tree does not have a clean strict-formatting/`-D warnings` baseline. Keep changes focused rather than reformatting unrelated code.
+
+Integration fixtures must work from a clean checkout on every matrix platform: select platform-specific storage paths, serialize filesystem paths into JSON rather than interpolating them, and generate synthetic Git metadata inside the temporary home instead of relying on nested `.git` files being tracked.
+
 ---
 
 ## Adding Support for a New AI Assistant
@@ -78,7 +105,7 @@ We have a dedicated, step-by-step technical guide covering adapter discovery, la
 ## Submitting a Pull Request
 
 1. Fork the repository and create your branch from `main`.
-2. Ensure all tests pass (`cargo test --manifest-path indexer/Cargo.toml`).
+2. Run the pull request checks above.
 3. Commit with a clear, conventional commit message (e.g. `feat: add goose agent adapter`).
 4. If you made structural or architectural changes, verify `AGENTS.md` is updated.
 5. Open a Pull Request on GitHub describing your changes and testing evidence.

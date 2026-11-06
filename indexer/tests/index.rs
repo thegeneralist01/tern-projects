@@ -197,8 +197,13 @@ fn build_opencode_db(home: &Path) {
 }
 
 fn build_cursor_db(home: &Path) {
-    std::fs::create_dir_all(home.join("Library/Application Support/Cursor/User/globalStorage")).unwrap();
-    let db_path = home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb");
+    let storage = if cfg!(target_os = "macos") {
+        "Library/Application Support/Cursor/User/globalStorage"
+    } else {
+        ".config/Cursor/User/globalStorage"
+    };
+    std::fs::create_dir_all(home.join(storage)).unwrap();
+    let db_path = home.join(storage).join("state.vscdb");
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);").unwrap();
 
@@ -251,12 +256,13 @@ fn null_str() -> Option<String> { None }
 
 fn build_worktree_fixture(home: &Path) {
     // Create a bare-ish repo structure:
-    //   <home>/repos/myrepo/.git/   (already in static fixtures)
+    //   <home>/repos/myrepo/.git/HEAD
     //   <home>/repos/myrepo/.git/worktrees/w/HEAD
     //   <home>/repos/myrepo/.git/worktrees/w/commondir  -> "../.."
     //   <home>/repos/worktree/.git  (file: "gitdir: ../myrepo/.git/worktrees/w")
     let repo_git = home.join("repos/myrepo/.git");
     std::fs::create_dir_all(repo_git.join("worktrees/w")).unwrap();
+    std::fs::write(repo_git.join("HEAD"), "ref: refs/heads/main").unwrap();
     std::fs::write(repo_git.join("worktrees/w/HEAD"), "ref: refs/heads/feat-wt").unwrap();
     std::fs::write(repo_git.join("worktrees/w/commondir"), "../..").unwrap();
     // The worktree dir.
@@ -415,8 +421,9 @@ fn test_worktree_scope() {
     std::fs::create_dir_all(&wt_sessions_dir).unwrap();
     let wt_file = wt_sessions_dir.join("20240601_wt-session.jsonl");
     let wt_cwd = home.join("repos/worktree").to_string_lossy().into_owned();
+    let cwd_json = serde_json::to_string(&wt_cwd).unwrap();
     let content = format!(
-        "{{\"type\":\"session\",\"id\":\"wt-session-1\",\"cwd\":\"{wt_cwd}\",\"timestamp\":1717236000000}}\n\
+        "{{\"type\":\"session\",\"id\":\"wt-session-1\",\"cwd\":{cwd_json},\"timestamp\":1717236000000}}\n\
          {{\"type\":\"message\",\"role\":\"user\",\"content\":\"worktree task in the branch\",\"timestamp\":1717236001000}}\n\
          {{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"done\",\"timestamp\":1717236002000}}\n"
     );

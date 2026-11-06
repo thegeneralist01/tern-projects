@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install stable Rust and Clippy
+        run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      # Existing formatting/style debt is not a gate; correctness and suspicious code are.
+      - name: Check Rust correctness and suspicious patterns
+        run: cargo +stable clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
+      - name: Test backend
+        run: cargo +stable test --locked --manifest-path indexer/Cargo.toml
+
+  tooling:
+    name: Luau, workflows, and shell
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install verified check tools
+        env:
+          TOOL_DIR: ${{ runner.temp }}/tern-projects-check-tools
+          LUAU_VERSION: '0.745'
+          LUAU_SHA256: 186e5ddaa2b048ebc7390c11ed1b00c04e7d3beaffed429250329e3575d2ece2
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          SHELLCHECK_VERSION: '0.11.0'
+          SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+        run: |
+          set -euo pipefail
+          mkdir -p "$TOOL_DIR"
+          curl --fail --silent --show-error --location --output "$TOOL_DIR/luau.zip" \
+            "https://github.com/luau-lang/luau/releases/download/$LUAU_VERSION/luau-ubuntu.zip"
+          printf '%s  %s\n' "$LUAU_SHA256" "$TOOL_DIR/luau.zip" | sha256sum --check --strict
+          unzip -q "$TOOL_DIR/luau.zip" -d "$TOOL_DIR/luau"
+          chmod +x "$TOOL_DIR/luau/luau-compile"
+          curl --fail --silent --show-error --location --output "$TOOL_DIR/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$TOOL_DIR/actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf "$TOOL_DIR/actionlint.tar.gz" -C "$TOOL_DIR" actionlint
+          curl --fail --silent --show-error --location --output "$TOOL_DIR/shellcheck.tar.gz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION/shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.gz"
+          printf '%s  %s\n' "$SHELLCHECK_SHA256" "$TOOL_DIR/shellcheck.tar.gz" | sha256sum --check --strict
+          tar -xzf "$TOOL_DIR/shellcheck.tar.gz" -C "$TOOL_DIR"
+          printf '%s\n' "$TOOL_DIR" "$TOOL_DIR/luau" "$TOOL_DIR/shellcheck-v$SHELLCHECK_VERSION" >> "$GITHUB_PATH"
+      - name: Check Luau syntax and strict headers
+        run: python3 scripts/check-luau.py
+      - name: Validate GitHub Actions workflows
+        run: actionlint
+      - name: Check shell scripts
+        run: shellcheck scripts/*.sh
+
+  checks:
+    name: PR checks
+    if: ${{ always() }}
+    needs: [rust, tooling]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every check to pass
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
+        run: |
+          test "$RUST_RESULT" = success
+          test "$TOOLING_RESULT" = success
