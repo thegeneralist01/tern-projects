@@ -71,12 +71,10 @@ function backend.ensure(cb: (string?, string?) -> ())
 		end
 	end
 	local windows = tern.runtime.os == "windows"
-	local home = tern.getenv("HOME") or tern.getenv("USERPROFILE") or ""
-	local cargoHome = tern.getenv("CARGO_HOME") or (home .. "/.cargo")
 	local name = if windows then "cargo.exe" else "cargo"
-	local candidates = { cargoHome .. "/bin/" .. name }
-	-- Check PATH before hard-coded fallback locations so an active toolchain
-	-- (e.g. Nix or custom Rust installation) is not overridden by Homebrew.
+	local candidates = {}
+	-- Check PATH before fallback locations so an active toolchain (e.g. Nix or
+	-- a custom Rust installation) is not overridden by ~/.cargo or Homebrew.
 	for directory in (tern.getenv("PATH") or ""):gmatch(if windows then "[^;]+" else "[^:]+") do
 		if windows then directory = directory:gsub('^"(.*)"$', "%1") end
 		-- Resolve only absolute entries; do not search the plugin's working directory.
@@ -84,8 +82,10 @@ function backend.ensure(cb: (string?, string?) -> ())
 			table.insert(candidates, directory .. "/" .. name)
 		end
 	end
-	-- Rust isn't always under CARGO_HOME or the GUI host's inherited PATH
-	-- (e.g. Homebrew or distro packages).
+	local home = tern.getenv("HOME") or tern.getenv("USERPROFILE") or ""
+	local cargoHome = tern.getenv("CARGO_HOME") or (if home ~= "" then home .. "/.cargo" else "")
+	if cargoHome ~= "" then table.insert(candidates, cargoHome .. "/bin/" .. name) end
+	-- Rust isn't always under PATH or CARGO_HOME (e.g. Homebrew or distro packages).
 	if not windows then
 		for _, directory in { "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin" } do
 			table.insert(candidates, directory .. "/" .. name)
@@ -103,9 +103,17 @@ function backend.ensure(cb: (string?, string?) -> ())
 	-- tools even when that installation isn't on the inherited PATH.
 	local pathSep = if windows then ";" else ":"
 	local cargoDir = cargo:match("^(.+)[/\\][^/\\]*$") or ""
-	-- Keep the plugin's PATH and system tools for compilers/linkers.
-	local envPath = (tern.getenv("PATH") or "") .. pathSep .. "/usr/bin" .. pathSep .. "/bin"
-	if cargoDir ~= "" then envPath = cargoDir .. pathSep .. envPath end
+	-- Keep the plugin's PATH and system tools for compilers/linkers without
+	-- introducing empty PATH segments.
+	local pathEntries = {}
+	if cargoDir ~= "" then table.insert(pathEntries, cargoDir) end
+	local currentPath = tern.getenv("PATH") or ""
+	if currentPath ~= "" then table.insert(pathEntries, currentPath) end
+	if not windows then
+		table.insert(pathEntries, "/usr/bin")
+		table.insert(pathEntries, "/bin")
+	end
+	local envPath = table.concat(pathEntries, pathSep)
 	local function compile(env: { [string]: string }?)
 		local started, err = pcall(tern.process.run, { cargo, "build", "--release", "--locked", "--manifest-path", tern.plugin.dir .. "/indexer/Cargo.toml", "--target-dir", root }, { timeout_ms = 1200000, env = env }, function(result)
 			if finished then return end
@@ -125,7 +133,7 @@ function backend.ensure(cb: (string?, string?) -> ())
 	end
 	local started, err = pcall(function()
 		tern.fs.mkdir(root)
-		if tern.runtime.os ~= "macos" then compile({ PATH = envPath }); return end
+		if tern.runtime.os ~= "macos" then compile(if envPath ~= "" then { PATH = envPath } else nil); return end
 		-- Keep the SDK and compiler in the selected Apple toolchain, not a mix
 		-- of PATH's cc/linker and a newer Command Line Tools SDK chosen by rustc.
 		tern.process.run({ "/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path" }, { timeout_ms = 10000 }, function(result)
