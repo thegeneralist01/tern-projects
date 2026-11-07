@@ -305,6 +305,38 @@ local function refresh(s: any)
 		if err then s.error = err; s.error_reload = false; s.cx:render() else s.indexed_at = os.time(); reload(s) end
 	end)
 end
+local function open_chat_tab(s: any, cwd: string, command: string, fallback: () -> ())
+	if command == "" or string.find(cwd, "[%z\r\n]") or string.find(command, "[%z\r\n]") then
+		toast(s, "error", "Invalid chat launch", "The working directory or command is missing or invalid.")
+		return
+	end
+	local bin = updates.tern_executable()
+	local argv = { bin, "new", "tab" }
+	if cwd ~= "" then
+		table.insert(argv, "--cwd")
+		table.insert(argv, cwd)
+	end
+	table.insert(argv, "--")
+	table.insert(argv, command)
+	local started = pcall(function()
+		(tern :: any).process.run(argv, { timeout_ms = 10000 }, function(result: any)
+			if not live(s) then return end
+			if result.status ~= 0 then
+				fallback()
+				return
+			end
+			local pane_id = string.match(result.stdout or "", "(%d+)")
+			if pane_id then
+				pcall(function()
+					(tern :: any).process.run({ bin, "focus", pane_id }, { timeout_ms = 5000 }, function() end)
+				end)
+			end
+		end)
+	end)
+	if not started then
+		fallback()
+	end
+end
 local function resume(s: any, chat: any)
 	local r = chat.resume
 	if not r then return end
@@ -314,7 +346,12 @@ local function resume(s: any, chat: any)
 			if result.status ~= 0 then toast(s, "error", "Couldn't resume chat", if result.stderr ~= "" then result.stderr else result.stdout) end
 		end)
 	elseif r.command and r.command ~= "" then
-		s.cx:open("tern-projects://resume?cwd=" .. fmt.pct(chat.cwd or "") .. "&cmd=" .. fmt.pct(r.command))
+		local cwd = chat.cwd or ""
+		local cmd = r.command
+		open_chat_tab(s, cwd, cmd, function()
+			if not live(s) then return end
+			s.cx:open("tern-projects://resume?cwd=" .. fmt.pct(cwd) .. "&cmd=" .. fmt.pct(cmd))
+		end)
 	end
 end
 local function copy(s: any, text: string, what: string)
@@ -658,10 +695,13 @@ local function launch_route(s: any, plan: any)
 		if s.launch_claim == claim then clear_launch_claim(s) end
 	end)
 	s.picker = nil; s.confirm = nil; s.pending_plan = nil
-	local opened, failure = pcall(function()
-		s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
+	open_chat_tab(s, plan.cwd, plan.command, function()
+		if not live(s) then clear_launch_claim(s); return end
+		local opened, failure = pcall(function()
+			s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
+		end)
+		if not opened then clear_launch_claim(s); s.error = "Cannot open chat launch: " .. tostring(failure); s.cx:render() end
 	end)
-	if not opened then clear_launch_claim(s); s.error = "Cannot open chat launch: " .. tostring(failure) end
 end
 launch_plan = function(s: any, harness: string, from_default: boolean)
 	local target = s.launch_target

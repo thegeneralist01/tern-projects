@@ -126,7 +126,8 @@ CI runs on every PR, pushes to `main`, and manual dispatch. Rust tests and corre
 - **Launch and Resume Contracts**:
   - Fresh chats launch with the primary project directory as `cwd`. Any additional folders are passed via harness-supported CLI flags (e.g. `--add-dir`), or a warning is surfaced before launching primary-only.
   - Command generation must be safely quoted per OS (`shell_join` on Unix, Base64-encoded command blocks on Windows).
-  - Fresh-chat launch URLs carry a per-nonce `launch:<nonce>` claim bound to the exact pane, command, and directory. Claims expire after 10 seconds and must be consumed before tab creation; a claim never substitutes for a live focused Projects panel on the local host.
+  - The host panel opens and focuses new/resumed chat tabs directly through the resolved host `tern` executable (`updates.tern_executable()`) so attached mobile/remote clients do not receive unhandled `tern-projects://` link effects (`Could not open the link: not supported on this platform`), and so launches succeed even when triggered from a remote client while the desktop window is unfocused or closed.
+  - Fallback `tern-projects://launch` URLs carry a per-nonce `launch:<nonce>` claim bound to the exact pane, command, and directory. Claims expire after 10 seconds and must be consumed before tab creation; a claim never substitutes for a live focused Projects panel on the local host.
 
 ## Code Conventions
 
