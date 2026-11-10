@@ -27,6 +27,9 @@ pub fn open(db_path: &Path) -> Result<(Connection, Library)> {
     // and stay unfiltered; only SHOWN/VISIBLE consult this table.
     let mut ignores = lib.ignores()?;
     conn.execute_batch("CREATE TEMP TABLE ignored_uids(uid TEXT PRIMARY KEY);")?;
+    // Keep the exclusion set, counts and pages on one index snapshot even if
+    // background indexing commits new chats while this response is assembled.
+    conn.execute_batch("BEGIN DEFERRED;")?;
     if !ignores.is_empty() {
         let mut stmt = conn.prepare("SELECT uid,cwd,project_root,worktree_root FROM sessions")?;
         let mut insert = conn.prepare("INSERT INTO temp.ignored_uids(uid) VALUES(?)")?;
@@ -261,14 +264,12 @@ fn projection(
                 })
                 .collect();
             // Definitions stay durable; only the card of a fully ignored, empty project hides.
-            if matching.is_empty()
-                && keep != Some(p.id.as_str())
-                && p.folders.iter().all(|f| ignores.covers(f))
-            {
+            let hidden = matching.is_empty() && p.folders.iter().all(|f| ignores.covers(f));
+            if hidden && keep != Some(p.id.as_str()) {
                 continue;
             }
             let updated = matching.first().map(|s| s.updated_ms).unwrap_or(0);
-            result.push((!matching.is_empty(),updated,p.created_ms,p.id.parse::<i64>()?,json!({"id":p.id,"name":p.name,"icon":p.icon,"folders":p.folders,"count":matching.len(),"updated_ms":updated,"sessions":matching.iter().take(per as usize).collect::<Vec<_>>()})));
+            result.push((!matching.is_empty(),updated,p.created_ms,p.id.parse::<i64>()?,json!({"id":p.id,"name":p.name,"icon":p.icon,"folders":p.folders,"hidden":hidden,"count":matching.len(),"updated_ms":updated,"sessions":matching.iter().take(per as usize).collect::<Vec<_>>()})));
         }
         result.sort_by(|a, b| {
             b.0.cmp(&a.0)
@@ -317,4 +318,31 @@ pub fn saved_project(db_path: &Path, home: &str, project_id: &str) -> Result<Val
         .cloned()
         .map(|project| json!({"project":project}))
         .context("project no longer exists")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexing_cannot_leak_ignored_chats_into_an_open_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("index.sqlite");
+        let folder = temp.path().join("ignored");
+        Library::open(&db).unwrap()
+            .ignore_source(folder.to_str().unwrap(), "", temp.path()).unwrap();
+        let (reader, _) = open(&db).unwrap();
+        let writer = db::open(&db).unwrap();
+        writer.execute(
+            "INSERT INTO sessions(uid,agent,id,source,title,cwd,project_root,worktree_root,created_ms,updated_ms,messages,last_assistant,resume)
+             VALUES('omp:new','omp','new','synthetic.jsonl','New chat',?1,?1,?1,1,2,1,'','{}')",
+            [folder.to_str().unwrap()],
+        ).unwrap();
+        assert!(visible(&reader, "").unwrap().is_empty(),
+            "a chat indexed after the exclusion scan must not leak into this response");
+        drop(reader);
+        let (next, _) = open(&db).unwrap();
+        assert!(visible(&next, "").unwrap().is_empty(),
+            "the next response must exclude the newly indexed chat too");
+    }
 }

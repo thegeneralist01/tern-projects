@@ -15,6 +15,7 @@ docs/                Documentation and technical guides
   adding-a-harness.md Step-by-step guide for implementing new assistant adapters
   contributors/      Circular, bordered contributor portraits for the README
   screenshots/       Showcase images for README and documentation
+openspec/changes/    Feature contracts, acceptance scenarios and verification records
 host.luau            Host process half: starts update checks and registers the panel block
 window.luau          Window process half: keybind migration/discovery, native settings, toggles, launch/resume routes
 blocks/panel.luau    Main UI: Projects (My Projects / Discovered), Search, Settings
@@ -97,6 +98,8 @@ CI runs on every PR, pushes to `main`, and manual dispatch. Rust tests and corre
   - `index.sqlite` is a rebuildable cache of history transcripts. Schema version bumps force a reindex.
   - `library.sqlite` stores durable user configurations (curated projects, folder associations, custom pins, chat assignments, global settings). Never drop or clear `library.sqlite` during index rebuilds.
   - Library schema v2 adds `project_chats(project_id,uid)` for retained automatic memberships. Saving changed source folders captures matching indexed chats, including archived chats, under the library write lock before replacing folders. Explicit `project`/`none` assignments override retained membership; old paths are not kept as live matching rules. Retention survives disposable-index rebuilds, cascades on project removal, and is cleared for verified UIDs during permanent chat deletion. Schema v1 upgrades transactionally without overwriting projects, annotations, or settings.
+  - Library schema v3 adds `ignored_sources(path,resolved)`: the lexically normalized absolute path is the stable rule/removal identity, while `resolved` preserves its alias target at creation. `source-ignore`, `source-unignore`, and `source-ignores` manage independent rules; snapshots include `ignored_sources`. v1/v2 upgrades are transactional and preserve all prior state.
+  - Ignore filtering matches whole path components against cwd, repository root and worktree root before counts/pagination across search, snapshots and archived browsing. `sessions::open` builds a connection-local ignored-UID table; project-save retention continues reading unfiltered sessions. All-ignored project cards without visible chats hide, but project-save still returns a hidden saved project. Never translate ignores into archive/assignment changes or source deletion; Settings removes exact persisted rules even after directories disappear.
 - **Automatic Compilation**:
   - `lib/backend.luau` automatically compiles the Rust binary with Cargo when the plugin loads and caches the binary inside `<plugin.data>/backend/`. Requests queue until compilation finishes.
   - Resolve Cargo from absolute host `PATH` entries first, then `CARGO_HOME/bin` (or `~/.cargo/bin`), then common Unix installation locations, retaining native executable lookup as the final fallback. Add the resolved Cargo directory to the build `PATH` on every platform; do not append Unix system directories on Windows or introduce empty segments when `PATH` is unset. `tern.process.run` extends the inherited environment rather than replacing it.

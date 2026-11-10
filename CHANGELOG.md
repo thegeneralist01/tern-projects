@@ -5,9 +5,11 @@ All notable changes to `tern-projects` will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Source-folder ignores**: Discovered folders offer a reversible **Ignore source folder…** action; Settings lists ignored paths with **Unignore**. Rules cover existing and future descendant/worktree chats consistently across projects, recents, pins, search, and archived browsing, before counts and pagination. Library schema v3 preserves rules across index rebuilds without changing transcripts, assignments, retained memberships, pins, or archive state.
 - **Pull request checks**: GitHub Actions runs backend tests and Clippy correctness/suspicious-pattern checks on Linux, macOS (Intel), and Windows, compiles runtime Luau and enforces strict headers, and validates workflows and shell scripts. A stable **PR checks** status aggregates the results; fork runs require no secrets and use read-only permissions and pinned, verified tools.
 
 ### Changed
+- **Library compatibility**: source-folder ignores upgrade library schema v1/v2 to v3. Older builds cannot open v3; they refuse it without overwriting data. Back up the library before upgrading if rollback is required.
 - **Portable integration fixtures**: select Cursor storage by platform, JSON-escape Windows worktree paths, compare folder and repository roots without platform-specific spelling assumptions (including concurrent first-open checks), and generate synthetic Git metadata inside the temporary home for clean CI checkouts.
 
 ## [0.2.12] — 2026-11-06

@@ -616,6 +616,12 @@ fn source_ignores_hide_everywhere_and_survive_migration_rebuild_and_unignore() {
     let error = fails(&db, &home, json!({"op":"source-ignore","path":"repo"}));
     assert!(error.contains("working directory"), "{error}");
     assert!(ignored(&library(&db, &home, json!({"op":"source-ignores"}))).is_empty());
+    #[cfg(windows)]
+    {
+        let error = fails(&db, &home, json!({"op":"source-ignore","path":"Z:relative","cwd":home}));
+        assert!(error.contains("absolute path"), "{error}");
+        assert!(ignored(&library(&db, &home, json!({"op":"source-ignores"}))).is_empty());
+    }
     library(&db, &home, json!({"op":"source-ignore","path":"repo","cwd":home}));
     library(&db, &home, json!({"op":"source-ignore","path":"~/gone"}));
     let rules = library(&db, &home, json!({"op":"source-ignore","path":sub.join(".")}));
@@ -646,6 +652,7 @@ fn source_ignores_hide_everywhere_and_survive_migration_rebuild_and_unignore() {
     // Saving a hidden project still returns it.
     let saved = library(&db, &home, json!({"op":"project-save","id":"3","name":"Gone","icon":"code","folders":[gone]}));
     assert_eq!(saved["project"]["id"], "3");
+    assert_eq!(saved["project"]["hidden"], true);
 
     // Removing one rule leaves an overlapping descendant rule in force.
     let rules = library(&db, &home, json!({"op":"source-unignore","path":path(&repo)}));
@@ -676,6 +683,13 @@ fn source_ignores_hide_everywhere_and_survive_migration_rebuild_and_unignore() {
     assert_eq!(project(&after, "3")["sessions"], project(&before, "3")["sessions"]);
     assert_eq!(conn.query_row("SELECT count(*) FROM project_chats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     assert_eq!(std::fs::read(&source).unwrap(), original);
+    // Folder edits while hidden must retain automatic memberships underneath
+    // the visibility filter, including chats indexed after the rule was added.
+    library(&db, &home, json!({"op":"source-ignore","path":repo}));
+    library(&db, &home, json!({"op":"project-save","id":"1","name":"Repo","icon":"code","folders":[sibling]}));
+    library(&db, &home, json!({"op":"source-unignore","path":path(&repo)}));
+    assert_eq!(uids(&project(&snapshot(&db, &home), "1")["sessions"]),
+        ["omp:later", "omp:mixed", "omp:sibling", "omp:sub", "omp:root"]);
 }
 
 #[cfg(unix)]

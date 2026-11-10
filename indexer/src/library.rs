@@ -455,6 +455,7 @@ impl Library {
     pub fn ignore_source(&mut self, value: &str, cwd: &str, home: &Path) -> Result<Value> {
         // Missing historical folders stay valid: no existence check.
         let path = expand(value, cwd, home).context("Source folder")?;
+        anyhow::ensure!(path.is_absolute(), "Source folder: an absolute path is required");
         let path = path.to_string_lossy();
         self.conn.execute(
             "INSERT OR IGNORE INTO ignored_sources(path,resolved) VALUES(?,?)",

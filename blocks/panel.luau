@@ -469,14 +469,16 @@ local function editor_intent(s: any, intent: string?, value: string?)
 			if not live(s) then return end
 			s.busy = false; s.busy_label = nil
 			if s.editor ~= d then
-				if err then toast(s, "error", "Couldn't save project", fmt.error(err)) else toast(s, "success", "Saved " .. d.name.text) end
+				if err then toast(s, "error", "Couldn't save project", fmt.error(err))
+				else toast(s, "success", "Saved " .. d.name.text, if data and data.project and data.project.hidden then "Hidden by ignored source folders. Unignore in Settings → Ignored source folders." else nil) end
 				reload(s); return
 			end
 			if err then d.error = fmt.error(err) else
 				s.editor = nil; s.view = "mine"; s.mode = "projects"
 				local p = data and data.project
-				if p then local key = "project:" .. tostring(p.id); s.sel = key; s.expanded[key] = true end
-				toast(s, "success", if d.id then "Saved " .. d.name.text else "Created " .. d.name.text)
+				if p and not p.hidden then local key = "project:" .. tostring(p.id); s.sel = key; s.expanded[key] = true else s.sel = nil end
+				toast(s, "success", if d.id then "Saved " .. d.name.text else "Created " .. d.name.text,
+					if p and p.hidden then "Hidden by ignored source folders. Unignore in Settings → Ignored source folders." else nil)
 				s.cx:frame({{"focus", NULL}})
 				reload(s)
 			end
@@ -1103,7 +1105,7 @@ local function picker_action(s: any, act: string?)
 			if s.picker == p then
 				if data and data.ignored_sources then set_ignored_items(s, p, data.ignored_sources) else load_ignored(s, p) end
 			end
-		end)
+		end, function() if s.picker == p then load_ignored(s, p) end end)
 	end
 end
 local function confirm_action(s: any, id: string)
