@@ -70,6 +70,8 @@ jobs:
           printf '%s\n' "$TOOL_DIR" "$TOOL_DIR/luau" "$TOOL_DIR/shellcheck-v$SHELLCHECK_VERSION" >> "$GITHUB_PATH"
       - name: Check Luau syntax and strict headers
         run: python3 scripts/check-luau.py
+      - name: Check PR inactivity transitions
+        run: python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
       - name: Validate GitHub Actions workflows
         run: actionlint
       - name: Check shell scripts

@@ -27,6 +27,7 @@ tern plugin reload                                   # Reload plugin in running 
 
 - Run checks relevant to the change. Rust tests and Clippy correctness/suspicious-pattern checks run on Linux, macOS (Intel), and Windows in CI. Formatting and existing style/dead-code warnings are not gates; avoid unrelated reformatting.
 - Luau checks compile runtime files at the root and under `blocks/` and `lib/`, excluding generated declarations. They do not check SDK types or native UI behavior; verify UI changes in Tern.
+- For PR inactivity automation, run `python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'`. The scheduled workflow has label/comment write permissions; fork CI remains read-only. It tracks activity in one bot-owned PR comment so its own comments and labels do not reset the clock; never close PRs as part of stale labeling.
 - Rust integration tests use real CLI executions and isolated temporary homes (`tests/fixtures/home/`). Keep fixtures cross-platform: select platform-specific storage paths, serialize paths into JSON, compare roots as paths, and generate synthetic Git metadata in the temporary home rather than relying on tracked nested `.git` files.
 - CI runs on PRs, pushes to `main`, and manual dispatch. Preserve the stable `PR checks` aggregate: failure, cancellation, or skipped dependencies must fail it. Keep fork runs secret-free, permissions read-only, checkout credentials unpersisted, actions commit-pinned, and downloaded tools checksum-verified. See [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-checks) for tool setup and branch protection.
 
@@ -46,6 +47,7 @@ tern plugin reload                                   # Reload plugin in running 
 | `indexer/src/harnesses.rs`, `indexer/src/adapters/`, `indexer/src/delete*.rs` | Verified harness discovery/launch, session parsing, fail-closed source deletion. |
 | `indexer/tests/` | Real-binary integration tests. |
 | `scripts/build.sh`, `scripts/check-luau.py`, `.github/workflows/ci.yml` | Release build, Luau compilation, CI checks. |
+| `scripts/pr_staleness.py`, `scripts/test_pr_staleness.py`, `.github/workflows/pr-staleness.yml` | Daily PR inactivity labels, persistent activity clock, transition tests. |
 | `plugin.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, `docs/` | Manifest, release notes, contributor workflow, technical guides and showcase assets. |
 | `bin/tern-projects`, `tern.d.luau` | Gitignored build output and generated Tern declarations. |
 

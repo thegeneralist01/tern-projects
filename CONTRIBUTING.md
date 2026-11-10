@@ -69,6 +69,7 @@ Whenever you modify Rust code in `indexer/`, run `./scripts/build.sh` (or `cargo
 - **Rust**: locked-dependency tests and Clippy correctness/suspicious-pattern checks on Linux, macOS (Intel), and Windows. The explicit `macos-15-intel` runner avoids arm64 runner-allocation failures.
 - **Luau**: compile runtime sources at the repository root and under `blocks/` and `lib/`, and require `--!strict` on the first line. Generated `*.d.luau` declarations are excluded. This checks syntax, not Tern SDK types or native UI behavior.
 - **Workflows and shell**: actionlint validates GitHub Actions, including embedded shell commands; ShellCheck checks `scripts/*.sh`.
+- **PR inactivity automation**: unit tests cover week boundaries, progression, and activity resets.
 - **PR checks**: a stable aggregate status that fails if any dependency fails, is cancelled, or is skipped. Configure this status as required in the repository's `main` branch ruleset to block merges.
 
 Fork PRs need no secrets. The workflow uses read-only repository permissions, checkout without persisted credentials, a commit-pinned action, and checksum-verified tool downloads. GitHub may still require a maintainer to approve runs from first-time contributors.
@@ -80,6 +81,7 @@ cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D cli
 cargo test --locked --manifest-path indexer/Cargo.toml
 python3 scripts/check-luau.py
 actionlint
+python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
 shellcheck scripts/*.sh
 ```
 
@@ -117,3 +119,17 @@ We have a dedicated, step-by-step technical guide covering adapter discovery, la
 3. Commit with a clear, conventional commit message (e.g. `feat: add goose agent adapter`).
 4. If you made structural or architectural changes, verify `AGENTS.md` is updated.
 5. Open a Pull Request on GitHub linking the issue opened beforehand and describing your changes and testing evidence.
+
+## PR Inactivity
+
+Open PRs, including drafts, are checked daily:
+
+| Time without activity | Label |
+| --- | --- |
+| At least 7 days | `soft-stale` |
+| At least 14 days | `medium-stale` |
+| At least 21 days | `hard-stale` |
+
+Only the current stage is kept; unrelated labels are preserved. New commits, comments, reviews, edits, and other PR activity reset the clock and clear stale labels on the next daily check. PRs are **not closed automatically**.
+
+The bot creates one tracking comment when a PR first becomes stale and reuses it afterward. Its own tracking-comment and stale-label changes do not count as activity. The workflow also supports a manual run from GitHub Actions and starts working once it is on the default branch.
