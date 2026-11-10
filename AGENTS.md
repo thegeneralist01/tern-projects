@@ -1,147 +1,94 @@
-# AGENTS.md — tern-projects
+# AGENTS.md
 
-A high-level guide for AI agents working in this repository.
+`tern-projects` is a Tern plugin for curated projects, AI chat history search, and chat launch/resume. The Luau frontend invokes a Rust CLI over stdin/stdout JSON; SQLite stores the disposable history index and durable user library separately.
+
+## Contribution workflow
+
+- Open an issue before a PR, or use an existing issue covering the change. Link it in the PR and describe changes and testing evidence. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and submission details.
+- Prefer Jujutsu (`jj`) for version-control tasks; use Git if `jj` is unavailable. Do not run destructive version-control commands unless explicitly requested.
+- Keep changes focused. Update this file when the code map, commands, conventions, or core invariants change; do not turn it into a change log or an exhaustive file inventory.
+- Maintainers handle version bumps when publishing releases. Do not change `plugin.toml`'s version unless the maintainer requests a release; commits without a version increase do not trigger update notifications.
+
+## Build and verification
+
+Prerequisites: Tern, stable Rust, and the check tools listed below. Run commands from the repository root.
+
+```sh
+./scripts/build.sh                                    # Build release binary into bin/tern-projects
+cargo test --locked --manifest-path indexer/Cargo.toml # Backend unit and integration tests
+cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
+python3 scripts/check-luau.py                          # Requires luau-compile 0.745
+actionlint                                           # Requires actionlint 1.7.12
+shellcheck scripts/*.sh                              # Requires ShellCheck 0.11.0
+tern plugin types .                                  # Regenerate tern.d.luau after Tern updates
+tern plugin link .                                   # Link plugin to local Tern instance
+tern plugin reload                                   # Reload plugin in running Tern instance
+```
+
+- Run checks relevant to the change. Rust tests and Clippy correctness/suspicious-pattern checks run on Linux, macOS (Intel), and Windows in CI. Formatting and existing style/dead-code warnings are not gates; avoid unrelated reformatting.
+- Luau checks compile runtime files at the root and under `blocks/` and `lib/`, excluding generated declarations. They do not check SDK types or native UI behavior; verify UI changes in Tern.
+- Rust integration tests use real CLI executions and isolated temporary homes (`tests/fixtures/home/`). Keep fixtures cross-platform: select platform-specific storage paths, serialize paths into JSON, compare roots as paths, and generate synthetic Git metadata in the temporary home rather than relying on tracked nested `.git` files.
+- CI runs on PRs, pushes to `main`, and manual dispatch. Preserve the stable `PR checks` aggregate: failure, cancellation, or skipped dependencies must fail it. Keep fork runs secret-free, permissions read-only, checkout credentials unpersisted, actions commit-pinned, and downloaded tools checksum-verified. See [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-checks) for tool setup and branch protection.
 
 ## Repo layout
 
-```
-.github/workflows/ci.yml  PR/main checks: Rust platform matrix, Luau compilation, workflow/shell linting
-plugin.toml          Tern plugin manifest
-styles.css           Theme & layout styling for panel surfaces
-CHANGELOG.md         Release history and notable changes
-CONTRIBUTING.md      Development workflows and PR guidelines
-LICENSE              Repository license
-docs/                Documentation and technical guides
-  adding-a-harness.md Step-by-step guide for implementing new assistant adapters
-  contributors/      Circular, bordered contributor portraits for the README
-  screenshots/       Showcase images for README and documentation
-host.luau            Host process half: starts update checks and registers the panel block
-window.luau          Window process half: keybind migration/discovery, native settings, toggles, launch/resume routes
-blocks/panel.luau    Main UI: Projects (My Projects / Discovered), Search, Settings
-lib/backend.luau     Automatic Cargo build at host startup, binary cache, request queuing
-lib/cli.luau         CLI invocation, JSON decoding, deletion/update coordination
-lib/fmt.luau         Formatting helpers: dates, agent labels/icons, URL encoding, snippets
-lib/input.luau       Keyboard shortcuts and native UTF-16 edit handling
-lib/picker.luau      Modal picker component for selection sheets
-lib/project-editor.luau  Unsaved project draft state and child directory browser
-lib/textfield.luau   UTF-8 text field component
-lib/ui.luau          Reusable UI elements, layout widgets, and list views
-lib/updates.luau     Host-only version checks, consent-gated installer, persistent recovery
-indexer/             Rust backend (`tern-projects` CLI binary)
-  src/main.rs        CLI subcommands: index, query, projects, library, migrate-data
-  src/model.rs       Data types: Candidate, Parsed, Resume, SessionJson
-  src/text.rs        String utilities: clean_user, shell_join, ISO timestamps
-  src/git.rs         Filesystem-based Git repository and worktree resolution
-  src/db.rs          Disposable index SQLite schema, migrations, and queries
-  src/library.rs     Durable user library SQLite schema, CRUD, folder membership
-  src/sessions.rs    Session projections, scopes, annotations, counts, and paging
-  src/harnesses.rs   Identity-verified CLI discovery and fresh-chat launch planning
-  src/delete*.rs     Fail-closed per-harness source deletion logic
-  src/adapters/      Session adapters for harnesses (claude, codex, omp, pi, opencode, cursor)
-  tests/             Real-binary integration test suites with isolated environments
-scripts/build.sh     Build helper: compiles release binary to bin/
-scripts/check-luau.py  Compile runtime Luau and enforce strict headers (requires luau-compile)
-bin/tern-projects    Compiled binary (gitignored)
-tern.d.luau          Generated Tern type stubs (gitignored)
-```
+| Area | Responsibility |
+| --- | --- |
+| `host.luau` | Host process: start update checks, register the panel, manage shared state. |
+| `window.luau` | Window process: shortcuts, native settings, toggles, `tern-projects://launch` and `tern-projects://resume` routes. |
+| `blocks/panel.luau`, `styles.css` | Projects, Search, and Settings UI. |
+| `lib/backend.luau`, `lib/cli.luau` | Cargo builds, binary cache, request queue, CLI JSON, deletion/update coordination. |
+| `lib/updates.luau` | Host-only update checks, consent-gated installation, recovery. |
+| `lib/input.luau`, `lib/textfield.luau` | Shortcuts, UTF-16 native edits, UTF-8 text fields. |
+| `lib/ui.luau`, `lib/picker.luau`, `lib/project-editor.luau`, `lib/fmt.luau` | Shared widgets, selection sheets, project drafts/directory browser, formatting. |
+| `indexer/src/main.rs`, `indexer/src/model.rs`, `indexer/src/text.rs`, `indexer/src/git.rs` | CLI entry, data types, quoting/timestamps, Git/worktree resolution. |
+| `indexer/src/db.rs`, `indexer/src/library.rs`, `indexer/src/sessions.rs` | Disposable index, durable library, session projections/scopes/paging. |
+| `indexer/src/harnesses.rs`, `indexer/src/adapters/`, `indexer/src/delete*.rs` | Verified harness discovery/launch, session parsing, fail-closed source deletion. |
+| `indexer/tests/` | Real-binary integration tests. |
+| `scripts/build.sh`, `scripts/check-luau.py`, `.github/workflows/ci.yml` | Release build, Luau compilation, CI checks. |
+| `plugin.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, `docs/` | Manifest, release notes, contributor workflow, technical guides and showcase assets. |
+| `bin/tern-projects`, `tern.d.luau` | Gitignored build output and generated Tern declarations. |
 
-## Architecture Overview
+For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) rather than inventing a second adapter pattern.
 
-`tern-projects` is a curated project manager, search engine, and launcher for AI agent histories, built as a Tern plugin.
+## Code conventions
 
-1. **Host / Window Split**:
-   - **Host** (`host.luau`): Runs in the Tern host process. Registers blocks, manages persistent host state, and triggers on-demand background builds (`lib/backend.luau`).
-   - **Window** (`window.luau`): Runs in each Tern window. Handles keyboard shortcuts, action palette commands, and dispatches IPC launch/resume routes (`tern-projects://launch`, `tern-projects://resume`).
+- **Luau:** every runtime file starts with `--!strict`. Window scripts must not call host-only APIs (`tern.fs.*`, `tern.pane.list`). Guard nil execution contexts and pane/generation liveness before applying asynchronous CLI results. Use `lib/input.luau` for native UTF-16 edit conversion.
+- **Rust:** keep adapters isolated in `indexer/src/adapters/` and use `anyhow` for consistent errors. Multi-table or multi-step database mutations require transactions and a 5000ms busy timeout. Use clean cutovers: no deprecated paths, dead feature flags, or compatibility shims.
 
-2. **Frontend UI (Luau)**:
-   - `blocks/panel.luau`: Primary sidebar UI featuring three main views: Projects (My Projects & Discovered), Search (scoped FTS), and Settings.
-   - `lib/`: Reusable components (`ui.luau`, `picker.luau`, `project-editor.luau`, `textfield.luau`, `input.luau`).
+## Storage
 
-3. **Backend CLI (Rust)**:
-   - A native Rust binary (`indexer/`) invoked via stdin/stdout JSON requests.
-   - Handles background filesystem indexing, full-text search (SQLite FTS5), metadata queries, harness detection, and atomic source chat deletions.
+- `index.sqlite` is rebuildable; index schema version bumps force reindexing. Never drop or clear durable `library.sqlite` during index rebuilds: it owns curated projects, folders, pins, chat assignments, and global settings.
+- Library schema v2 retains automatic memberships in `project_chats(project_id,uid)`. When saving changed source folders, capture matching indexed chats (including archived chats) under the library write lock before replacing folders. Explicit `project`/`none` assignments override retention; old paths must not remain live matching rules.
+- Retained membership survives index rebuilds, cascades on project removal, and is cleared for verified UIDs during permanent chat deletion. Upgrade schema v1 transactionally without overwriting projects, annotations, or settings.
 
+## Backend builds
 
-## Maintaining AGENTS.md
+- `lib/backend.luau` builds with Cargo at plugin load, caches the binary in `<plugin.data>/backend/`, and queues requests until the build settles.
+- Resolve Cargo from absolute host `PATH` entries, then `CARGO_HOME/bin` (or `~/.cargo/bin`), then common Unix installation locations, with native executable lookup as the final fallback. Add the resolved Cargo directory to build `PATH` on every platform. Do not append Unix system directories on Windows or introduce empty segments when `PATH` is unset. `tern.process.run` extends the inherited environment.
+- On macOS, use `/usr/bin/xcrun --sdk macosx --show-sdk-path` for `SDKROOT` and `/usr/bin/clang` for native C compilation and both supported Cargo target linkers. Other platforms keep Cargo's defaults.
+- Retain complete Cargo output in Tern's log; summarize compiler errors ahead of progress/warnings in the UI. SDK discovery and asynchronous Cargo spawn failures must settle every queued caller.
 
-This file is the living architectural map for AI agents and human contributors working on `tern-projects`. Always keep it up to date:
-- **Structural updates**: Whenever files are added, moved, or deleted, update the `Repo layout` above.
-- **Architectural shifts**: If database schemas, storage separation, IPC routes, or deletion contracts change, document the new invariants here.
-- **Tooling & workflow**: If build commands, test harnesses, or plugin lifecycle hooks change, update the commands section.
-Keeping this file accurate prevents regressions and context drift across autonomous agent sessions.
-## VCS Conventions
+## Plugin updates
 
-This repository uses Jujutsu (`.jj`) as its primary version-control interface.
-- Always prefer `jj` commands (`jj status`, `jj describe`, `jj diff`, `jj new`) for VCS tasks.
-- Avoid destructive or mutating `git` commands unless specifically requested.
+- Start `lib/updates.luau` before the Rust backend. Automatic checks compare the official `main/plugin.toml` stable numeric version at most every 6 hours (`CHECK_INTERVAL`). Keep preferences, attempt/cache timestamps, and pending-install recovery in Tern KV, separate from the library/index.
+- Installation requires explicit version-bound UI approval or opt-in automatic installation (off by default and dependent on automatic checks). Invoke only the resolved Tern executable with fixed `plugin install github.com/thegeneralist01/tern-projects --force` arguments, never shell commands from remote metadata. The installer fetches latest official `main`, not a pinned version; success requires disk confirmation of at least the last checked version.
+- Discover the installer through absolute host `PATH` entries, user-local Unix CLI/macOS application locations, then native executable lookup. Discovery/spawn failures clear pending approval and release the installation guard. Automatic installation attempts each version at most once, never automatically retries failures, and leaves manual review available. Preserve Tern's protection of linked development checkouts.
+- Pending installation status survives reload. On disk-confirmed success, persist `completed_version` and remove pending state. `window.luau` delivers the **Updated!** toast after reload without a panel, acknowledging it under `plugin-update-toast:v1`; the window must not rewrite host-owned updater preferences.
+- At startup, clear a saved installation failure only when the installed version reaches its target `latest_version`. Keep check failures with no target and failures targeting newer versions.
+- A shared host guard excludes installation and active permanent deletion, including queued deletions that become ready during installation. Update checks never modify the library/index.
 
-## Build & Test Commands
+## Deletion safety
 
-```sh
-./scripts/build.sh                                # Build release binary into bin/tern-projects
-cargo test --locked --manifest-path indexer/Cargo.toml  # Run backend unit and integration tests
-cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
-python3 scripts/check-luau.py                      # Requires luau-compile 0.745 on PATH
-actionlint                                       # Validate GitHub Actions (1.7.12)
-shellcheck scripts/*.sh                          # Check shell scripts (0.11.0)
-tern plugin types .                              # Regenerate tern.d.luau after Tern updates
-tern plugin link .                               # Link plugin to local Tern instance
-tern plugin reload                               # Reload plugin in running Tern instance
-```
+- Fail closed: verify source identity and idle store conditions before removing files or records. Never delete project files, repositories, or worktrees.
+- Use verified native CLI deletion commands for Codex/OpenCode. For OMP, Claude, Pi, and Cursor, remove only verified owned session files/artifacts; refuse if the process is running or store ownership cannot be proven.
+- OMP cleanup accepts only verified table/FTS schemas and bounded indexing triggers. Delete exact binary-matched session IDs and verified owned dependents; preserve unattributed history. Refuse unknown triggers, foreign-key dependencies, or ambiguous indexed/unindexed dependent identities.
+- Revalidate OMP confirmation after acquiring the history write lock with a 5000ms busy timeout. SQL deletion and FTS repair must succeed before transcript removal. Filesystem removal and SQLite commit are not crash-atomic: report partial failures without automatic retry.
 
-CI runs on every PR, pushes to `main`, and manual dispatch. Rust tests and correctness/suspicious-pattern Clippy gates run on Linux, macOS (Intel), and Windows. Luau checks compile runtime files at the root and under `blocks/` and `lib/`, excluding generated declaration files; this is not SDK type checking or native UI verification. Formatting and style/dead-code warnings are not gates until a clean baseline is established. `PR checks` aggregates every job and fails on failure, cancellation, or skips; use that stable status for branch protection. Keep fork runs secret-free, permissions read-only, checkout credentials unpersisted, actions commit-pinned, and downloaded tools checksum-verified. See `CONTRIBUTING.md` for local setup.
+## Keyboard shortcuts and chat launch
 
-## Core Invariants
-
-- **Durable Library vs. Disposable Index**:
-  - `index.sqlite` is a rebuildable cache of history transcripts. Schema version bumps force a reindex.
-  - `library.sqlite` stores durable user configurations (curated projects, folder associations, custom pins, chat assignments, global settings). Never drop or clear `library.sqlite` during index rebuilds.
-  - Library schema v2 adds `project_chats(project_id,uid)` for retained automatic memberships. Saving changed source folders captures matching indexed chats, including archived chats, under the library write lock before replacing folders. Explicit `project`/`none` assignments override retained membership; old paths are not kept as live matching rules. Retention survives disposable-index rebuilds, cascades on project removal, and is cleared for verified UIDs during permanent chat deletion. Schema v1 upgrades transactionally without overwriting projects, annotations, or settings.
-- **Automatic Compilation**:
-  - `lib/backend.luau` automatically compiles the Rust binary with Cargo when the plugin loads and caches the binary inside `<plugin.data>/backend/`. Requests queue until compilation finishes.
-  - Resolve Cargo from absolute host `PATH` entries first, then `CARGO_HOME/bin` (or `~/.cargo/bin`), then common Unix installation locations, retaining native executable lookup as the final fallback. Add the resolved Cargo directory to the build `PATH` on every platform; do not append Unix system directories on Windows or introduce empty segments when `PATH` is unset. `tern.process.run` extends the inherited environment rather than replacing it.
-  - On macOS, resolve the active Apple SDK with `/usr/bin/xcrun --sdk macosx --show-sdk-path`, set `SDKROOT`, and use `/usr/bin/clang` for native C compilation and both supported Cargo target linkers. This avoids mixing PATH-provided linkers with an incompatible SDK; other platforms retain Cargo's compiler/linker defaults.
-  - Build failures retain complete Cargo output in Tern's log and summarize compiler errors before progress/warning noise in the UI. SDK discovery and asynchronous Cargo spawn failures must settle all queued callers.
-- **Plugin Updates**:
-  - `lib/updates.luau` starts before the Rust backend. Automatic checks compare the official `main/plugin.toml` stable numeric version at most every 6 hours (`CHECK_INTERVAL`); Tern KV stores updater preferences, attempt/cache timestamps, and pending-install recovery independently of `library.sqlite`.
-  - Every in-app installation requires either explicit, version-bound UI approval or opt-in automatic installation (disabled by default; requires automatic checks). Installation invokes the resolved Tern executable with fixed `plugin install github.com/thegeneralist01/tern-projects --force` arguments, never a shell command from remote metadata. The installer fetches latest official `main`, not a pinned version; success requires disk confirmation of at least the last checked version.
-  - Installer discovery prefers absolute host PATH entries, then user-local Unix CLI and macOS application locations, retaining native executable lookup for other layouts. Discovery and spawn failures clear pending approval and release the installation guard; failures are never retried automatically for the same version.
-  - Pending installation status survives plugin reload. Automatic installation makes at most one attempt per version and never retries failures automatically, while manual review remains available. Linked development checkouts remain protected by Tern's installer.
-  - Successful disk-confirmed in-app installations persist `completed_version` alongside pending-state removal. `window.luau` delivers the **Updated!** toast after reload without requiring a panel and stores its acknowledgment under the separate `plugin-update-toast:v1` key; the window never rewrites host-owned updater preferences.
-  - At startup, a saved installation failure is cleared once the installed version reaches its target `latest_version`; check failures (no target version) and still-newer targets keep their error.
-  - A shared host guard excludes in-app installation and active permanent deletion, including queued deletions becoming ready during installation. Updater checks never modify the library/index.
-  - Increase `plugin.toml`'s version when publishing an update; commit changes without a version increase are not update notifications.
-- **Fail-Closed Deletion Safety**:
-  - Permanent chat deletion verifies source identity and idle store conditions before removing any files or database records.
-  - Harnesses with native CLI commands (e.g. Codex, OpenCode) use their verified native CLI deletion subcommands.
-  - Harnesses without native deletion (OMP, Claude, Pi, Cursor) remove only verified session files/artifacts and refuse if the process is running or store ownership cannot be proven.
-  - OMP history cleanup accepts only verified table/FTS schemas and bounded indexing triggers, deletes exact binary-matched session IDs and verified owned dependents, and preserves unattributed history. Unknown triggers, foreign-key dependencies, or ambiguous indexed/unindexed dependent identities refuse deletion.
-  - OMP confirmation is revalidated after acquiring the history write lock with a 5000ms busy timeout; SQL deletion and FTS repair must succeed before transcript removal. Filesystem removals and SQLite commit are not crash-atomic; partial failures are reported without automatic retry.
-  - Never delete user project files, repositories, or worktrees during chat deletion.
-- **Keyboard Shortcuts**:
-  - Global shortcuts remain Tern-owned (`settings.json` `keybinds`). The window reports `cx.actions:keys()` effective bindings to Settings; the plugin never stores a second keymap in the library, KV, or saved pane state.
-  - `tern-projects://shortcuts?`, `keyboard?`, and `keyconfig?` require a live focused Projects panel in the calling window. They respectively report the keymap or invoke only the fixed `preferences` / `open_config` commands; no arbitrary command or file path is accepted.
-  - Settings requests a keymap snapshot every second while open. Pane/generation liveness stops stale polling, and identical snapshots do not redraw or disturb dialogs. Panel-only navigation and actions remain a separate fixed reference.
-  - Tern’s native Keyboard editor may omit unbound plugin actions; Settings exposes their copyable IDs and the native settings-file command without inventing replacement defaults.
-- **Launch and Resume Contracts**:
-  - Fresh chats launch with the primary project directory as `cwd`. Any additional folders are passed via harness-supported CLI flags (e.g. `--add-dir`), or a warning is surfaced before launching primary-only.
-  - Command generation must be safely quoted per OS (`shell_join` on Unix, Base64-encoded command blocks on Windows).
-  - Fresh-chat launch URLs carry a per-nonce `launch:<nonce>` claim bound to the exact pane, command, and directory. Claims expire after 10 seconds and must be consumed before tab creation; a claim never substitutes for a live focused Projects panel on the local host.
-
-## Code Conventions
-
-### Luau
-- Every file MUST begin with `--!strict`.
-- Window scripts (`window.luau`) must not call host-only APIs (`tern.fs.*`, `tern.pane.list`).
-- Guard against nil execution contexts and check pane/generation liveness before applying async CLI callback results.
-- Avoid text field cursor mismatches: use `lib/input.luau` for consistent native UTF-16 edit conversions.
-
-### Rust
-- Clean cutovers: avoid deprecated paths, dead feature flags, and backward-compatibility shims.
-- All database operations across tables or multi-step mutations must use transactions with an active busy timeout (5000ms).
-- Keep adapters isolated in `indexer/src/adapters/` with uniform error handling via `anyhow`.
-- Tests must run against isolated temporary home directories (`tests/fixtures/home/`) using real CLI executions.
-
-## Adding a New Harness / Adapter
-
-See the complete technical guide in **[docs/adding-a-harness.md](docs/adding-a-harness.md)** for detailed implementation patterns, error handling, and test requirements.
+- Global shortcuts belong to Tern's `settings.json` `keybinds`. Report `cx.actions:keys()` effective bindings to Settings; never store a second keymap in the library, KV, or pane state. Keep panel-only actions/navigation as a separate fixed reference.
+- `tern-projects://shortcuts?`, `keyboard?`, and `keyconfig?` require a live focused Projects panel in the calling window. They only report bindings or invoke fixed `preferences` / `open_config` commands; never accept arbitrary commands or file paths.
+- While Settings is open, request a keymap snapshot every second. Stop stale polling through pane/generation liveness; identical snapshots must not redraw or disturb dialogs. Tern's Keyboard editor may omit unbound plugin actions: expose copyable IDs and the native settings-file command without inventing defaults.
+- Fresh chats use the primary project directory as `cwd`. Pass additional folders through supported harness flags (such as `--add-dir`), or warn before launching primary-only. Quote commands per OS: `shell_join` on Unix, Base64-encoded command blocks on Windows.
+- Fresh-chat URLs carry a per-nonce `launch:<nonce>` claim bound to the exact pane, command, and directory. Claims expire after 10 seconds and must be consumed before tab creation; they never replace a live focused Projects panel on the local host.

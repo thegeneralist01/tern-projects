@@ -21,19 +21,19 @@ Use the issue to discuss scope and avoid duplicate work. Link the issue in your 
 Whether you are writing code by hand or pairing with an AI coding assistant (like Claude Code, Cursor, OMP, Codex, Pi, or OpenCode), contributions are welcome!
 
 ### The Role of `AGENTS.md`
-If you or your AI assistant are modifying the project, **[AGENTS.md](AGENTS.md)** is the authoritative guide for this repository. It documents:
-- The complete repository layout and module responsibilities.
-- The host/window process architecture.
-- Core invariants (such as storage isolation between `library.sqlite` and `index.sqlite`, and fail-closed deletion safety).
-- Build, test, and verification commands.
-- Coding conventions for Luau, Rust, and Jujutsu (`.jj`).
+If you or your AI assistant are modifying the project, follow **[AGENTS.md](AGENTS.md)** for repository-specific instructions:
+- Contribution workflow and version-control conventions.
+- Build commands, verification requirements, and a compact code map.
+- Coding conventions and core invariants, including storage isolation and fail-closed deletion.
 
 ### When to Update `AGENTS.md`
-To keep this repository easy to maintain for both human developers and future AI agent runs, please update `AGENTS.md` whenever your PR:
-- **Adds, moves, or removes files**: Keep the `Repo layout` tree in `AGENTS.md` accurate.
-- **Changes core invariants**: Such as modifying storage schemas, background build behavior, or safety requirements for chat deletion.
-- **Updates commands or tools**: Changes to test suites, build scripts, or plugin lifecycle hooks.
-- **Establishes new conventions**: New patterns across Luau UI components or Rust modules.
+Update `AGENTS.md` when your PR changes:
+- **Code organization**: Keep the `Repo layout` map accurate for affected areas; it is not an exhaustive file inventory.
+- **Core invariants**: Storage schemas, background builds, IPC routes, updates, or chat deletion.
+- **Commands or tools**: Test suites, build scripts, tool versions, or plugin lifecycle hooks.
+- **Coding conventions**: Rules agents need to follow when modifying Luau or Rust.
+
+Keep instructions actionable. Put release history in `CHANGELOG.md` and detailed implementation guides in `docs/` rather than expanding `AGENTS.md` with narrative or duplicated documentation.
 
 ---
 
