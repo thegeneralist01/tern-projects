@@ -8,6 +8,14 @@ Thank you for your interest in contributing to `tern-projects`!
 
 ---
 
+## Open an Issue First
+
+Every pull request must have a related issue opened before the PR. Before starting work, search the [existing issues](https://github.com/thegeneralist01/tern-projects/issues). If none covers your proposed change, open one describing the bug or improvement and the approach you plan to take.
+
+Use the issue to discuss scope and avoid duplicate work. Link the issue in your PR description; use `Closes #123` when the PR fully resolves it, or `Refs #123` for related work.
+
+---
+
 ## Contributing with AI Coding Agents
 
 Whether you are writing code by hand or pairing with an AI coding assistant (like Claude Code, Cursor, OMP, Codex, Pi, or OpenCode), contributions are welcome!
@@ -108,4 +116,4 @@ We have a dedicated, step-by-step technical guide covering adapter discovery, la
 2. Run the pull request checks above.
 3. Commit with a clear, conventional commit message (e.g. `feat: add goose agent adapter`).
 4. If you made structural or architectural changes, verify `AGENTS.md` is updated.
-5. Open a Pull Request on GitHub describing your changes and testing evidence.
+5. Open a Pull Request on GitHub linking the issue opened beforehand and describing your changes and testing evidence.
