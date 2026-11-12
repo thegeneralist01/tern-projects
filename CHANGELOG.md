@@ -12,6 +12,9 @@ All notable changes to `tern-projects` will be documented in this file.
 - **Library compatibility**: source-folder ignores upgrade library schema v1/v2 to v3. Older builds cannot open v3; they refuse it without overwriting data. Back up the library before upgrading if rollback is required.
 - **Portable integration fixtures**: select Cursor storage by platform, JSON-escape Windows worktree paths, compare folder and repository roots without platform-specific spelling assumptions (including concurrent first-open checks), and generate synthetic Git metadata inside the temporary home for clean CI checkouts.
 
+### Fixed
+- **ACP resumes**: Codex and Claude Code Resume open Tern’s ACP interface when automatic ACP is enabled, while respecting each agent’s own-interface preference. Copied resume commands remain portable CLI commands.
+
 ## [0.2.12] — 2026-11-06
 
 ### Fixed
