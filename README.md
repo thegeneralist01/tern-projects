@@ -151,6 +151,7 @@ Thanks to everyone who has contributed to tern-projects.
 <a href="https://github.com/flosrn"><img src="docs/contributors/flosrn.png" width="48" height="48" alt="@flosrn" title="@flosrn"></a>
 <a href="https://github.com/lumiarna"><img src="docs/contributors/lumiarna.png" width="48" height="48" alt="@lumiarna" title="@lumiarna"></a>
 <a href="https://github.com/Zestful-ss"><img src="docs/contributors/Zestful-ss.png" width="48" height="48" alt="@Zestful-ss" title="@Zestful-ss"></a>
+<a href="https://github.com/panosAthDBX"><img src="docs/contributors/panosAthDBX.png" width="48" height="48" alt="@panosAthDBX" title="@panosAthDBX"></a>
 </p>
 
 ---
