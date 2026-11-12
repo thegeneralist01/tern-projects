@@ -11,7 +11,10 @@ use std::path::Path;
 
 const COLUMNS:&str = "s.uid,s.agent,s.id,s.title,s.cwd,s.project_root,s.worktree_root,s.branch,s.model,s.created_ms,s.updated_ms,s.messages,s.last_assistant,s.resume";
 const JOIN: &str = " LEFT JOIN library.chat_state cs ON cs.uid=s.uid ";
-const VISIBLE: &str = "cs.archived_ms IS NULL";
+// Ignored source folders hide chats everywhere, before counts and paging.
+const SHOWN: &str = "s.uid NOT IN (SELECT uid FROM temp.ignored_uids)";
+const VISIBLE: &str =
+    "cs.archived_ms IS NULL AND s.uid NOT IN (SELECT uid FROM temp.ignored_uids)";
 
 pub fn open(db_path: &Path) -> Result<(Connection, Library)> {
     let lib = Library::open(db_path)?;
@@ -20,6 +23,28 @@ pub fn open(db_path: &Path) -> Result<(Connection, Library)> {
         "ATTACH DATABASE ? AS library",
         [crate::library::path(db_path).to_string_lossy().as_ref()],
     )?;
+    // Library-side writers (project-save retention) read `sessions` directly
+    // and stay unfiltered; only SHOWN/VISIBLE consult this table.
+    let mut ignores = lib.ignores()?;
+    conn.execute_batch("CREATE TEMP TABLE ignored_uids(uid TEXT PRIMARY KEY);")?;
+    // Keep the exclusion set, counts and pages on one index snapshot even if
+    // background indexing commits new chats while this response is assembled.
+    conn.execute_batch("BEGIN DEFERRED;")?;
+    if !ignores.is_empty() {
+        let mut stmt = conn.prepare("SELECT uid,cwd,project_root,worktree_root FROM sessions")?;
+        let mut insert = conn.prepare("INSERT INTO temp.ignored_uids(uid) VALUES(?)")?;
+        let mut records = stmt.query([])?;
+        while let Some(r) = records.next()? {
+            // Matching repository/worktree roots keeps linked worktrees hidden too.
+            let mut hidden = false;
+            for i in 1..4 {
+                hidden = hidden || ignores.covers(&r.get::<_, String>(i)?);
+            }
+            if hidden {
+                insert.execute([r.get::<_, String>(0)?])?;
+            }
+        }
+    }
     Ok((conn, lib))
 }
 fn rows(conn: &Connection, sql: &str, values: &[SqlValue], home: &str) -> Result<Vec<SessionJson>> {
@@ -186,6 +211,17 @@ fn visible(conn: &Connection, home: &str) -> Result<Vec<SessionJson>> {
     )
 }
 pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -> Result<Value> {
+    projection(db_path, home, view, per, recent, None)
+}
+/// `keep` names a curated project to return even when ignores hide its card.
+fn projection(
+    db_path: &Path,
+    home: &str,
+    view: &str,
+    per: i64,
+    recent: i64,
+    keep: Option<&str>,
+) -> Result<Value> {
     anyhow::ensure!(
         ["mine", "discovered"].contains(&view),
         "invalid project view"
@@ -209,6 +245,7 @@ pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -
     let projects = if view == "mine" {
         let projects = lib.projects()?;
         let mut membership = lib.membership()?;
+        let mut ignores = lib.ignores()?;
         let mut result = Vec::with_capacity(projects.len());
         for p in projects {
             let matching: Vec<_> = sessions
@@ -226,8 +263,13 @@ pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -
                     )
                 })
                 .collect();
+            // Definitions stay durable; only the card of a fully ignored, empty project hides.
+            let hidden = matching.is_empty() && p.folders.iter().all(|f| ignores.covers(f));
+            if hidden && keep != Some(p.id.as_str()) {
+                continue;
+            }
             let updated = matching.first().map(|s| s.updated_ms).unwrap_or(0);
-            result.push((!matching.is_empty(),updated,p.created_ms,p.id.parse::<i64>()?,json!({"id":p.id,"name":p.name,"icon":p.icon,"folders":p.folders,"count":matching.len(),"updated_ms":updated,"sessions":matching.iter().take(per as usize).collect::<Vec<_>>()})));
+            result.push((!matching.is_empty(),updated,p.created_ms,p.id.parse::<i64>()?,json!({"id":p.id,"name":p.name,"icon":p.icon,"folders":p.folders,"hidden":hidden,"count":matching.len(),"updated_ms":updated,"sessions":matching.iter().take(per as usize).collect::<Vec<_>>()})));
         }
         result.sort_by(|a, b| {
             b.0.cmp(&a.0)
@@ -255,25 +297,52 @@ pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -
         }
         groups
     };
-    Ok(json!({"projects":projects,"pinned":pinned,"recent":recents,"settings":lib.settings()?}))
+    Ok(json!({"projects":projects,"pinned":pinned,"recent":recents,"settings":lib.settings()?,"ignored_sources":lib.ignored_sources()?}))
 }
 pub fn archived(db_path: &Path, home: &str, limit: i64, offset: i64) -> Result<Value> {
     page(limit, offset)?;
     let (conn, _) = open(db_path)?;
     let total: i64 = conn.query_row(
-        &format!("SELECT count(*) FROM sessions s{JOIN}WHERE cs.archived_ms IS NOT NULL"),
+        &format!("SELECT count(*) FROM sessions s{JOIN}WHERE cs.archived_ms IS NOT NULL AND {SHOWN}"),
         [],
         |r| r.get(0),
     )?;
-    let sessions=rows(&conn,&format!("{}{JOIN}WHERE cs.archived_ms IS NOT NULL ORDER BY cs.archived_ms DESC,s.uid LIMIT ? OFFSET ?",select("NULL")),&[limit.into(),offset.into()],home)?;
+    let sessions=rows(&conn,&format!("{}{JOIN}WHERE cs.archived_ms IS NOT NULL AND {SHOWN} ORDER BY cs.archived_ms DESC,s.uid LIMIT ? OFFSET ?",select("NULL")),&[limit.into(),offset.into()],home)?;
     Ok(json!({"sessions":sessions,"total":total,"offset":offset}))
 }
 pub fn saved_project(db_path: &Path, home: &str, project_id: &str) -> Result<Value> {
-    let snapshot = snapshot(db_path, home, "mine", 25, 15)?;
+    let snapshot = projection(db_path, home, "mine", 25, 15, Some(project_id))?;
     snapshot["projects"]
         .as_array()
         .and_then(|projects| projects.iter().find(|p| p["id"] == project_id))
         .cloned()
         .map(|project| json!({"project":project}))
         .context("project no longer exists")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexing_cannot_leak_ignored_chats_into_an_open_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("index.sqlite");
+        let folder = temp.path().join("ignored");
+        Library::open(&db).unwrap()
+            .ignore_source(folder.to_str().unwrap(), "", temp.path()).unwrap();
+        let (reader, _) = open(&db).unwrap();
+        let writer = db::open(&db).unwrap();
+        writer.execute(
+            "INSERT INTO sessions(uid,agent,id,source,title,cwd,project_root,worktree_root,created_ms,updated_ms,messages,last_assistant,resume)
+             VALUES('omp:new','omp','new','synthetic.jsonl','New chat',?1,?1,?1,1,2,1,'','{}')",
+            [folder.to_str().unwrap()],
+        ).unwrap();
+        assert!(visible(&reader, "").unwrap().is_empty(),
+            "a chat indexed after the exclusion scan must not leak into this response");
+        drop(reader);
+        let (next, _) = open(&db).unwrap();
+        assert!(visible(&next, "").unwrap().is_empty(),
+            "the next response must exclude the newly indexed chat too");
+    }
 }

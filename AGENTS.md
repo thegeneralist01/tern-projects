@@ -63,6 +63,7 @@ For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) r
 - `index.sqlite` is rebuildable; index schema version bumps force reindexing. Never drop or clear durable `library.sqlite` during index rebuilds: it owns curated projects, folders, pins, chat assignments, and global settings.
 - Library schema v2 retains automatic memberships in `project_chats(project_id,uid)`. When saving changed source folders, capture matching indexed chats (including archived chats) under the library write lock before replacing folders. Explicit `project`/`none` assignments override retention; old paths must not remain live matching rules.
 - Retained membership survives index rebuilds, cascades on project removal, and is cleared for verified UIDs during permanent chat deletion. Upgrade schema v1 transactionally without overwriting projects, annotations, or settings.
+- Library schema v3 adds `ignored_sources(path,resolved)`; the normalized path is each rule's removal identity. Upgrade v1/v2 transactionally. Ignores match whole path components of cwd, repository root, and worktree root, and filter before counts/paging in every projection. Never turn ignores into archive/assignment changes or source deletion; project-save retention reads unfiltered sessions.
 
 ## Backend builds
 

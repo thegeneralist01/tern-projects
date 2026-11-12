@@ -61,6 +61,15 @@ pub enum Request {
         expected_source: String,
         expected_version: String,
     },
+    SourceIgnore {
+        path: String,
+        #[serde(default)]
+        cwd: String,
+    },
+    SourceUnignore {
+        path: String,
+    },
+    SourceIgnores,
 }
 
 // Option<Value> cannot distinguish an absent field from an explicit JSON null.
@@ -114,7 +123,7 @@ impl Library {
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         conn.pragma_update(None, "foreign_keys", true)?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version < 2 {
+        if version < 3 {
             // Recheck under the write lock before initializing or migrating.
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -136,7 +145,7 @@ impl Library {
                     PRAGMA user_version=1;")?;
             } else {
                 anyhow::ensure!(
-                    version == 1 || version == 2,
+                    (1..=3).contains(&version),
                     "unsupported library schema version {version}; library was not overwritten"
                 );
             }
@@ -151,11 +160,20 @@ impl Library {
                     PRAGMA user_version=2;",
                 )?;
             }
+            if version < 3 {
+                validate_library(&tx)?;
+                // `path` is the exact supplied rule identity; `resolved` keeps the
+                // alias target seen when the rule was added.
+                tx.execute_batch(
+                    "CREATE TABLE ignored_sources(path TEXT PRIMARY KEY,resolved TEXT NOT NULL);
+                    PRAGMA user_version=3;",
+                )?;
+            }
             validate_library(&tx)?;
             tx.commit()?;
         } else {
             anyhow::ensure!(
-                version == 2,
+                version == 3,
                 "unsupported library schema version {version}; library was not overwritten"
             );
             validate_library(&conn)?;
@@ -424,6 +442,48 @@ impl Library {
         tx.commit()?;
         Ok(json!({"settings":self.settings()?}))
     }
+    /// `[{path}]`; each path is the exact identity `unignore_source` accepts.
+    pub fn ignored_sources(&self) -> Result<Value> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM ignored_sources ORDER BY path")?;
+        let rules = stmt
+            .query_map([], |r| Ok(json!({"path": r.get::<_, String>(0)?})))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Value::Array(rules))
+    }
+    pub fn ignore_source(&mut self, value: &str, cwd: &str, home: &Path) -> Result<Value> {
+        // Missing historical folders stay valid: no existence check.
+        let path = expand(value, cwd, home).context("Source folder")?;
+        anyhow::ensure!(path.is_absolute(), "Source folder: an absolute path is required");
+        let path = path.to_string_lossy();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO ignored_sources(path,resolved) VALUES(?,?)",
+            params![&*path, &*normalized(&path).to_string_lossy()],
+        )?;
+        Ok(json!({"ignored_sources":self.ignored_sources()?}))
+    }
+    pub fn unignore_source(&mut self, path: &str) -> Result<Value> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM ignored_sources WHERE path=?", [path])?;
+        anyhow::ensure!(removed == 1, "ignored source folder no longer exists");
+        Ok(json!({"ignored_sources":self.ignored_sources()?}))
+    }
+    pub fn ignores(&self) -> Result<Ignores> {
+        let mut stmt = self.conn.prepare("SELECT path,resolved FROM ignored_sources")?;
+        let mut rows = stmt.query([])?;
+        let mut rules = Vec::new();
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let resolved: String = row.get(1)?;
+            rules.push(lexical(Path::new(&path)));
+            rules.push(normalized(&path));
+            rules.push(PathBuf::from(resolved));
+        }
+        rules.retain(|rule| rule.is_absolute());
+        Ok(Ignores { rules, cache: HashMap::new() })
+    }
 }
 
 fn validate_library(conn: &Connection) -> Result<()> {
@@ -464,10 +524,13 @@ fn validate_schema(conn: &Connection) -> Result<()> {
         ),
         ("settings", &[("key", "TEXT", 1), ("value", "TEXT", 0)]),
         ("project_chats", &[("project_id", "INTEGER", 1), ("uid", "TEXT", 2)]),
+        ("ignored_sources", &[("path", "TEXT", 1), ("resolved", "TEXT", 0)]),
     ];
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (table, expected) in tables {
-        if *table == "project_chats" && version < 2 {
+        if (*table == "project_chats" && version < 2)
+            || (*table == "ignored_sources" && version < 3)
+        {
             continue;
         }
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -589,6 +652,31 @@ pub fn folders(value: &str, cwd: &str, home: &Path, offset: i64, limit: i64) -> 
         .map(|(name, path)| json!({"name":name,"path":path}))
         .collect();
     Ok(json!({"path":path,"parent":path.parent(),"entries":entries,"total":total}))
+}
+/// Source-folder ignore rules matched by path components against both the
+/// recorded and the resolved form of a path.
+pub struct Ignores {
+    rules: Vec<PathBuf>,
+    cache: HashMap<String, bool>,
+}
+impl Ignores {
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+    pub fn covers(&mut self, path: &str) -> bool {
+        if let Some(&hit) = self.cache.get(path) {
+            return hit;
+        }
+        let raw = lexical(Path::new(path));
+        // Relative paths would resolve against this process's cwd.
+        let hit = raw.is_absolute()
+            && (self.rules.iter().any(|rule| raw.starts_with(rule)) || {
+                let resolved = normalized(path);
+                self.rules.iter().any(|rule| resolved.starts_with(rule))
+            });
+        self.cache.insert(path.to_owned(), hit);
+        hit
+    }
 }
 
 pub struct Membership {

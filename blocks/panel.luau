@@ -233,7 +233,7 @@ end
 local function mutate(s: any, payload: any, done: ((any) -> ())?, on_err: ((string) -> ())?)
 	if s.busy then return end
 	local conf, p = s.confirm, s.picker
-	local verb = if payload.op == "delete" then "Deleting…" elseif payload.op == "project-remove" then "Removing…" elseif payload.assignment then "Moving…" elseif payload.archived == false then "Restoring…" else "Saving…"
+	local verb = if payload.op == "delete" then "Deleting…" elseif payload.op == "project-remove" then "Removing…" elseif payload.op == "source-ignore" then "Ignoring…" elseif payload.op == "source-unignore" then "Unignoring…" elseif payload.assignment then "Moving…" elseif payload.archived == false then "Restoring…" else "Saving…"
 	s.busy = true; s.busy_label = verb
 	if conf then conf.error = nil end
 	if p then p.message = nil; p.busy_label = verb end
@@ -259,7 +259,7 @@ reload = function(s: any)
 		if err then s.error = err; s.error_reload = true else
 			s.error = nil; s.loaded = true
 			if s.mode == "search" then s.results = data.sessions or {}; s.total = data.total or 0
-			else s.projects = data.projects or {}; s.pinned = data.pinned or {}; s.recent = data.recent or {}; s.settings = data.settings or s.settings end
+			else s.projects = data.projects or {}; s.pinned = data.pinned or {}; s.recent = data.recent or {}; s.settings = data.settings or s.settings; s.ignored_sources = data.ignored_sources or s.ignored_sources end
 			rebuild(s)
 			if s.search_edge and s.mode == "search" then
 				s.sel = s.order[if s.search_edge == "last" then #s.order else 1]
@@ -273,6 +273,7 @@ reload = function(s: any)
 		cli.request({op = "snapshot", view = "mine", per = 0, recent = 0}, function(data, err)
 			if not live(s) or s.gen ~= gen or err or not data then return end
 			s.settings = data.settings or s.settings
+			s.ignored_sources = data.ignored_sources or s.ignored_sources
 			s.project_list = data.projects or {}
 			if s.project_id then
 				local found = false
@@ -468,14 +469,16 @@ local function editor_intent(s: any, intent: string?, value: string?)
 			if not live(s) then return end
 			s.busy = false; s.busy_label = nil
 			if s.editor ~= d then
-				if err then toast(s, "error", "Couldn't save project", fmt.error(err)) else toast(s, "success", "Saved " .. d.name.text) end
+				if err then toast(s, "error", "Couldn't save project", fmt.error(err))
+				else toast(s, "success", "Saved " .. d.name.text, if data and data.project and data.project.hidden then "Hidden by ignored source folders. Unignore in Settings → Ignored source folders." else nil) end
 				reload(s); return
 			end
 			if err then d.error = fmt.error(err) else
 				s.editor = nil; s.view = "mine"; s.mode = "projects"
 				local p = data and data.project
-				if p then local key = "project:" .. tostring(p.id); s.sel = key; s.expanded[key] = true end
-				toast(s, "success", if d.id then "Saved " .. d.name.text else "Created " .. d.name.text)
+				if p and not p.hidden then local key = "project:" .. tostring(p.id); s.sel = key; s.expanded[key] = true else s.sel = nil end
+				toast(s, "success", if d.id then "Saved " .. d.name.text else "Created " .. d.name.text,
+					if p and p.hidden then "Hidden by ignored source folders. Unignore in Settings → Ignored source folders." else nil)
 				s.cx:frame({{"focus", NULL}})
 				reload(s)
 			end
@@ -637,6 +640,33 @@ local function archived_picker(s: any)
 		actions = {{id = "close", label = "Close", keys = {"esc"}}, {id = "archived-prev", label = "Previous", keys = {"ctrl+p"}, disabled = true}, {id = "archived-next", label = "Next", keys = {"ctrl+n"}, disabled = true}, {id = "archived-delete", label = "Delete permanently…", keys = {if tern.runtime.os == "macos" then "cmd+backspace" else "ctrl+backspace"}, danger = true, ["end"] = true}, {id = "archived-restore", label = "Restore", keys = {"enter"}, primary = true}}})
 	load_archived_page(s, s.picker, 0)
 end
+-- Exact persisted paths are the removal identity; the backend owns path matching.
+local function set_ignored_items(s: any, p: any, list: {any})
+	s.ignored_sources = list
+	local items = {}
+	for _, rule in list do
+		table.insert(items, {id = rule.path, label = rule.path, title = rule.path, mono = true, icon = "folder", detail = "Includes subfolders and worktrees"})
+	end
+	p.items = items; p.state = "ready"; p.message = nil
+	picker.settle(p)
+end
+local function load_ignored(s: any, p: any)
+	p.state = "loading"; p.message = nil
+	for _, a in p.actions do if a.id == "ignored-retry" then a.disabled = true end end
+	request(s, {op = "source-ignores"}, function(data)
+		if s.picker == p then set_ignored_items(s, p, data.ignored_sources or {}) end
+	end, "ignored", function(err)
+		if s.picker ~= p then return end
+		p.state = "error"; p.message = fmt.error(err)
+		for _, a in p.actions do if a.id == "ignored-retry" then a.disabled = false end end
+	end)
+end
+local function ignored_picker(s: any)
+	open_picker(s, {kind = "ignored", title = "Ignored source folders", subtitle = "Each rule hides a folder and its subfolders. Rules are independent: unignoring a folder keeps it hidden while a parent folder stays ignored.",
+		icon = "slash-circle", noun = "ignored folders", search = true, placeholder = "Filter folders", state = "loading", items = {}, empty = "No ignored source folders. Use Ignore source folder… on a Discovered folder.",
+		actions = {{id = "close", label = "Close", keys = {"esc"}}, {id = "ignored-retry", label = "Retry", keys = {"ctrl+r"}, disabled = true}, {id = "unignore", label = "Unignore", keys = {"enter"}, primary = true}}})
+	load_ignored(s, s.picker)
+end
 
 -- Launching ------------------------------------------------------------------------------
 
@@ -775,7 +805,12 @@ local function menu_entries(s: any, key: string): {string}
 		return {"resume", "copy-resume-command", "copy-chat-id", "-", if row.ref.pinned then "unpin" else "pin", "move-to-project…", if row.ref.archived then "restore" else "archive", "-", if s.mode == "search" then "search-options" else "panel-options", "-", "delete-permanently…"}
 	elseif row.kind == "project" then
 		if s.view == "mine" then return {"new-chat", "new-chat-with…", "-", "edit-project…", "remove-project…", "-", "panel-options"} end
-		return {"new-chat", "new-chat-with…", "-", "save-as-project…", "-", "panel-options"}
+		local entries = {"new-chat", "new-chat-with…", "-", "save-as-project…"}
+		-- Chats without a working directory group under an empty root; there is no folder to ignore.
+		if (row.ref.root or "") ~= "" then table.insert(entries, "ignore-source-folder…") end
+		table.insert(entries, "-")
+		table.insert(entries, "panel-options")
+		return entries
 	end
 	return {}
 end
@@ -801,6 +836,7 @@ local MENU_META: {[string]: any} = {
 	["edit-project…"] = {label = "Edit project…", icon = "sliders"},
 	["remove-project…"] = {label = "Remove project…", icon = "trash", tone = "error"},
 	["save-as-project…"] = {label = "Save as project…", icon = "folder-plus"},
+	["ignore-source-folder…"] = {label = "Ignore source folder…", icon = "slash-circle"},
 	["create"] = {label = "Create project…", icon = "plus"},
 	["refresh"] = {label = "Refresh", icon = "redo", hint = {"ctrl", "r"}},
 	["scope=workspace"] = {label = "Worktree", icon = "folder"},
@@ -831,6 +867,19 @@ local function confirm_remove(s: any, p: any)
 	s.confirm = {kind = "remove", title = "Remove “" .. project_name(p) .. "”?", body = {
 		c.note("The project is removed from your sidebar. Chats and source folders will not be deleted. Chats you moved here go back to matching by folder."),
 	}, buttons = {{id = "cancel", label = "Cancel"}, {id = "remove-confirm", label = "Remove project", variant = "danger"}}, focus = 1}
+end
+local function confirm_ignore(s: any, p: any)
+	cancel_flow(s)
+	local path = p.root or ""
+	s.confirm = {kind = "ignore", title = "Ignore source folder?", body = {
+		ui.el("div", {class = "tp-subject"}, {
+			ui.node("icon", {name = "folder"}),
+			ui.el("div", {class = "tp-subject-t"}, {ui.node("text", {text = path, lines = 3, title = path, role = "tern-projects.path"})}),
+		}),
+		c.note("Chats started in this folder or any of its subfolders, including its worktrees, are hidden from Projects, Recents, Pinned, Search and counts, now and in future."),
+		c.note("Nothing is deleted or moved. Chats, projects, pins and archive state stay as they are."),
+		c.note("Undo anytime in Settings → Ignored source folders.", "muted"),
+	}, buttons = {{id = "cancel", label = "Cancel"}, {id = "ignore-confirm", label = "Ignore folder", variant = "primary"}}, focus = 1, data = {path = path}}
 end
 local function confirm_delete(s: any, chat: any)
 	cancel_flow(s)
@@ -951,7 +1000,7 @@ end
 
 -- Actions ------------------------------------------------------------------------------------
 
-local SETTINGS = {"default", "icons", "archived", "refresh", "update-auto", "update-auto-install", "update-check", "update-install", "update-copy", "shortcut-projects", "shortcut-search", "shortcut-settings", "keyboard", "keyconfig"}
+local SETTINGS = {"default", "icons", "archived", "ignored", "refresh", "update-auto", "update-auto-install", "update-check", "update-install", "update-copy", "shortcut-projects", "shortcut-search", "shortcut-settings", "keyboard", "keyconfig"}
 local function update_busy(snapshot: any): boolean
 	return snapshot.status == "checking" or snapshot.status == "installing"
 end
@@ -1052,6 +1101,16 @@ local function picker_action(s: any, act: string?)
 			s.archived_picker = p
 			confirm_delete(s, chat)
 		end
+	elseif p.kind == "ignored" then
+		if act == "ignored-retry" then load_ignored(s, p); return end
+		if act ~= "unignore" or not it or p.state ~= "ready" then return end
+		local path = it.id
+		mutate(s, {op = "source-unignore", path = path}, function(data)
+			toast(s, "success", "Folder unignored", "Remaining overlapping rules still apply.")
+			if s.picker == p then
+				if data and data.ignored_sources then set_ignored_items(s, p, data.ignored_sources) else load_ignored(s, p) end
+			end
+		end, function() if s.picker == p then load_ignored(s, p) end end)
 	end
 end
 local function confirm_action(s: any, id: string)
@@ -1110,6 +1169,12 @@ local function confirm_action(s: any, id: string)
 			toast(s, "success", "Project removed", "Chats and folders were not changed.")
 			if s.project_id == pid then s.project_id = nil; s.project_label = nil; s.search_cwd = nil; s.offset = 0 end
 		end) end
+	elseif id == "ignore-confirm" then
+		local path = conf.data.path
+		if path ~= "" then mutate(s, {op = "source-ignore", path = path}, function()
+			if s.confirm == conf then s.confirm = nil end
+			toast(s, "success", "Folder ignored", "Undo in Settings → Ignored source folders.")
+		end) end
 	elseif id == "delete-confirm" then
 		local p = s.delete_preview
 		if p and type(p.blocked_reason) ~= "string" then mutate(s, {op = "delete", uid = p.uid, expected_source = p.source, expected_version = p.version}, function()
@@ -1150,6 +1215,7 @@ local function row_action(s: any, act: string, key: string)
 	if act == "new-chat" or act == "new-chat-with…" then new_chat(s, key, act == "new-chat-with…")
 	elseif act == "edit-project…" then open_editor(s, p)
 	elseif act == "save-as-project…" then open_editor(s, {name = project_name(p), folders = {p.root}})
+	elseif act == "ignore-source-folder…" and s.view == "discovered" and (p.root or "") ~= "" then confirm_ignore(s, p)
 	elseif act == "remove-project…" then confirm_remove(s, p) end
 end
 action = function(s: any, act: string, value: string?)
@@ -1241,6 +1307,7 @@ action = function(s: any, act: string, value: string?)
 			mutate(s, {op = "settings-update", icon_style = style}, nil, function() s.settings.icon_style = previous end)
 		end
 	elseif act == "archived" then s.settings_focus = "archived"; archived_picker(s)
+	elseif act == "ignored" then s.settings_focus = "ignored"; ignored_picker(s)
 	elseif act == "resume" or act == "copy-resume-command" or act == "copy-chat-id" then
 		-- Native menus name the clicked row; the dock and shortcuts act on the selection.
 		local chat = find_chat(s, if value then fmt.unpct(value) else (s.sel or ""))
@@ -1293,6 +1360,7 @@ local function settings_key(s: any, k: Key): boolean
 		if f == "default" then action(s, "default-picker", nil)
 		elseif f == "icons" then action(s, "icon-style", nil)
 		elseif f == "archived" then action(s, "archived", nil)
+		elseif f == "ignored" then action(s, "ignored", nil)
 		elseif f == "refresh" then refresh(s)
 		elseif f == "update-auto" or f == "update-auto-install" or f == "update-check" or f == "update-install" or f == "update-copy" or f == "keyboard" or f == "keyconfig" then action(s, f, nil)
 		elseif string.sub(f, 1, 9) == "shortcut-" then action(s, "shortcut-copy", string.sub(f, 10)) end
@@ -1615,6 +1683,10 @@ local function settings_view(s: any): any
 		ui.el("div", {class = "tp-card"}, {
 			setting_row("archived", f == "archived", "Archived chats", if archived and archived > 0 then fmt.plural(archived, "chat") .. " hidden from lists and search." else "Archived chats are hidden from lists and search.",
 				c.button("View", "archived", {size = "sm", focused = f == "archived"})),
+			setting_row("ignored", f == "ignored", "Ignored source folders",
+				if s.ignored_sources and #s.ignored_sources > 0 then fmt.plural(#s.ignored_sources, "folder") .. " and subfolders hidden from lists and search."
+				else "Hide a folder with Ignore source folder… in Discovered.",
+				c.button("Manage", "ignored", {size = "sm", focused = f == "ignored"})),
 			setting_row("refresh", f == "refresh", "Chat index", index_desc,
 				c.button(if s.indexing then "Refreshing…" else "Refresh", "refresh", {size = "sm", icon = "redo", disabled = s.indexing, focused = f == "refresh"})),
 		}),
