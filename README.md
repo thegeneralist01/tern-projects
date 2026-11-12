@@ -66,20 +66,6 @@ Changing a project's name or source folders does not discard its existing indexe
 
 For chats already hidden by a folder change made before this fix, find them in **All history** and use **Move to project** to restore their association.
 
-### Ignore source folders
-
-In **Projects → Discovered**, open a folder's context menu (right-click or `Shift+F10`) and choose **Ignore source folder…**. Confirm the displayed path to hide that folder, its descendants, and chats in its linked worktrees from Discovered, project chat lists, Recents, Pinned, Search, and Archived chats. The rule also covers future chats. A similarly named sibling such as `/work/separate-repo-old` is not covered by `/work/separate-repo`.
-
-Use **Settings → Ignored source folders → Manage** to inspect paths and **Unignore** one. Overlapping rules are independent: removing a child rule does not override an ignored parent. Paths that no longer exist can still be unignored. Fully ignored projects with no visible chats are hidden from normal project lists, not deleted.
-
-Ignore is a visibility preference, not Archive, No project, or deletion. Original transcripts and repositories, project definitions, retained memberships, assignments, pins, and archive state remain unchanged. Unignore restores ordinary visibility and membership; archived chats remain archived. Rules live in `library.sqlite`, survive reindexing and restarts, and are added by a transactional upgrade from library schema v1/v2 to v3.
-
-The schema upgrade is forward-only: older plugin builds that accept only library v1/v2 will refuse a v3 library rather than overwrite it. Keep a backup before upgrading if you need to roll back.
-
-Path matching uses whole components and resolves available filesystem aliases, with a lexical fallback for missing historical paths. A rule retains the alias target resolved when it was added. An alias removed before its relationship was recorded cannot be reconstructed from a transcript containing only that old path.
-
-If a symlink is retargeted, its rule continues covering the saved old target as well as the current path/target until you unignore that exact listed rule.
-
 ![tern-projects details, menus, and search results](docs/screenshots/showcase-details.png)
 
 ---
@@ -153,7 +139,7 @@ Permanent deletion refuses unknown history schemas or triggers, ambiguous source
 
 ## Contributing
 
-Contributions are welcome! Whether you are fixing a bug, improving Luau block performance, or adding support for a new AI coding assistant, see [CONTRIBUTING.md](CONTRIBUTING.md) for architecture notes and step-by-step instructions.
+Contributions are welcome! Open an issue before submitting a pull request, or use an existing issue that covers your change. Whether you are fixing a bug, improving Luau block performance, or adding support for a new AI coding assistant, see [CONTRIBUTING.md](CONTRIBUTING.md) for architecture notes and step-by-step instructions.
 
 ---
 

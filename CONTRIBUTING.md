@@ -8,24 +8,32 @@ Thank you for your interest in contributing to `tern-projects`!
 
 ---
 
+## Open an Issue First
+
+Every pull request must have a related issue opened before the PR. Before starting work, search the [existing issues](https://github.com/thegeneralist01/tern-projects/issues). If none covers your proposed change, open one describing the bug or improvement and the approach you plan to take.
+
+Use the issue to discuss scope and avoid duplicate work. Link the issue in your PR description; use `Closes #123` when the PR fully resolves it, or `Refs #123` for related work.
+
+---
+
 ## Contributing with AI Coding Agents
 
 Whether you are writing code by hand or pairing with an AI coding assistant (like Claude Code, Cursor, OMP, Codex, Pi, or OpenCode), contributions are welcome!
 
 ### The Role of `AGENTS.md`
-If you or your AI assistant are modifying the project, **[AGENTS.md](AGENTS.md)** is the authoritative guide for this repository. It documents:
-- The complete repository layout and module responsibilities.
-- The host/window process architecture.
-- Core invariants (such as storage isolation between `library.sqlite` and `index.sqlite`, and fail-closed deletion safety).
-- Build, test, and verification commands.
-- Coding conventions for Luau, Rust, and Jujutsu (`.jj`).
+If you or your AI assistant are modifying the project, follow **[AGENTS.md](AGENTS.md)** for repository-specific instructions:
+- Contribution workflow and version-control conventions.
+- Build commands, verification requirements, and a compact code map.
+- Coding conventions and core invariants, including storage isolation and fail-closed deletion.
 
 ### When to Update `AGENTS.md`
-To keep this repository easy to maintain for both human developers and future AI agent runs, please update `AGENTS.md` whenever your PR:
-- **Adds, moves, or removes files**: Keep the `Repo layout` tree in `AGENTS.md` accurate.
-- **Changes core invariants**: Such as modifying storage schemas, background build behavior, or safety requirements for chat deletion.
-- **Updates commands or tools**: Changes to test suites, build scripts, or plugin lifecycle hooks.
-- **Establishes new conventions**: New patterns across Luau UI components or Rust modules.
+Update `AGENTS.md` when your PR changes:
+- **Code organization**: Keep the `Repo layout` map accurate for affected areas; it is not an exhaustive file inventory.
+- **Core invariants**: Storage schemas, background builds, IPC routes, updates, or chat deletion.
+- **Commands or tools**: Test suites, build scripts, tool versions, or plugin lifecycle hooks.
+- **Coding conventions**: Rules agents need to follow when modifying Luau or Rust.
+
+Keep instructions actionable. Put release history in `CHANGELOG.md` and detailed implementation guides in `docs/` rather than expanding `AGENTS.md` with narrative or duplicated documentation.
 
 ---
 
@@ -61,6 +69,7 @@ Whenever you modify Rust code in `indexer/`, run `./scripts/build.sh` (or `cargo
 - **Rust**: locked-dependency tests and Clippy correctness/suspicious-pattern checks on Linux, macOS (Intel), and Windows. The explicit `macos-15-intel` runner avoids arm64 runner-allocation failures.
 - **Luau**: compile runtime sources at the repository root and under `blocks/` and `lib/`, and require `--!strict` on the first line. Generated `*.d.luau` declarations are excluded. This checks syntax, not Tern SDK types or native UI behavior.
 - **Workflows and shell**: actionlint validates GitHub Actions, including embedded shell commands; ShellCheck checks `scripts/*.sh`.
+- **PR inactivity automation**: unit tests cover week boundaries, progression, and activity resets.
 - **PR checks**: a stable aggregate status that fails if any dependency fails, is cancelled, or is skipped. Configure this status as required in the repository's `main` branch ruleset to block merges.
 
 Fork PRs need no secrets. The workflow uses read-only repository permissions, checkout without persisted credentials, a commit-pinned action, and checksum-verified tool downloads. GitHub may still require a maintainer to approve runs from first-time contributors.
@@ -72,6 +81,7 @@ cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D cli
 cargo test --locked --manifest-path indexer/Cargo.toml
 python3 scripts/check-luau.py
 actionlint
+python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
 shellcheck scripts/*.sh
 ```
 
@@ -108,4 +118,18 @@ We have a dedicated, step-by-step technical guide covering adapter discovery, la
 2. Run the pull request checks above.
 3. Commit with a clear, conventional commit message (e.g. `feat: add goose agent adapter`).
 4. If you made structural or architectural changes, verify `AGENTS.md` is updated.
-5. Open a Pull Request on GitHub describing your changes and testing evidence.
+5. Open a Pull Request on GitHub linking the issue opened beforehand and describing your changes and testing evidence.
+
+## PR Inactivity
+
+Open PRs, including drafts, are checked daily:
+
+| Time without activity | Label |
+| --- | --- |
+| At least 7 days | `soft-stale` |
+| At least 14 days | `medium-stale` |
+| At least 21 days | `hard-stale` |
+
+Only the current stage is kept; unrelated labels are preserved. New commits, comments, reviews, edits, and other PR activity reset the clock and clear stale labels on the next daily check. PRs are **not closed automatically**.
+
+The bot creates one tracking comment when a PR first becomes stale and reuses it afterward. Its own tracking-comment and stale-label changes do not count as activity. The workflow also supports a manual run from GitHub Actions and starts working once it is on the default branch.
