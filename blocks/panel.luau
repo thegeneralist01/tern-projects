@@ -805,7 +805,12 @@ local function menu_entries(s: any, key: string): {string}
 		return {"resume", "copy-resume-command", "copy-chat-id", "-", if row.ref.pinned then "unpin" else "pin", "move-to-project…", if row.ref.archived then "restore" else "archive", "-", if s.mode == "search" then "search-options" else "panel-options", "-", "delete-permanently…"}
 	elseif row.kind == "project" then
 		if s.view == "mine" then return {"new-chat", "new-chat-with…", "-", "edit-project…", "remove-project…", "-", "panel-options"} end
-		return {"new-chat", "new-chat-with…", "-", "save-as-project…", "ignore-source-folder…", "-", "panel-options"}
+		local entries = {"new-chat", "new-chat-with…", "-", "save-as-project…"}
+		-- Chats without a working directory group under an empty root; there is no folder to ignore.
+		if (row.ref.root or "") ~= "" then table.insert(entries, "ignore-source-folder…") end
+		table.insert(entries, "-")
+		table.insert(entries, "panel-options")
+		return entries
 	end
 	return {}
 end
@@ -1210,7 +1215,7 @@ local function row_action(s: any, act: string, key: string)
 	if act == "new-chat" or act == "new-chat-with…" then new_chat(s, key, act == "new-chat-with…")
 	elseif act == "edit-project…" then open_editor(s, p)
 	elseif act == "save-as-project…" then open_editor(s, {name = project_name(p), folders = {p.root}})
-	elseif act == "ignore-source-folder…" and s.view == "discovered" then confirm_ignore(s, p)
+	elseif act == "ignore-source-folder…" and s.view == "discovered" and (p.root or "") ~= "" then confirm_ignore(s, p)
 	elseif act == "remove-project…" then confirm_remove(s, p) end
 end
 action = function(s: any, act: string, value: string?)
