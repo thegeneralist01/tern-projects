@@ -139,7 +139,7 @@ Permanent deletion refuses unknown history schemas or triggers, ambiguous source
 
 ## Contributing
 
-Contributions are welcome! Open an issue before submitting a pull request, or use an existing issue that covers your change. Whether you are fixing a bug, improving Luau block performance, or adding support for a new AI coding assistant, see [CONTRIBUTING.md](CONTRIBUTING.md) for architecture notes and step-by-step instructions.
+Contributions are welcome! AI-assisted bug-fix PRs require an issue; enhancement PRs do not. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and submission details.
 
 ---
 

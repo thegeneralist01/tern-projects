@@ -8,11 +8,11 @@ Thank you for your interest in contributing to `tern-projects`!
 
 ---
 
-## Open an Issue First
+## Issues for AI-Assisted Bug Fixes
 
-Every pull request must have a related issue opened before the PR. Before starting work, search the [existing issues](https://github.com/thegeneralist01/tern-projects/issues). If none covers your proposed change, open one describing the bug or improvement and the approach you plan to take.
+AI-assisted bug-fix PRs (not enhancement PRs!) must reference an issue. Reuse an existing issue or open one before the PR to discuss scope.
 
-Use the issue to discuss scope and avoid duplicate work. Link the issue in your PR description; use `Closes #123` when the PR fully resolves it, or `Refs #123` for related work.
+Search the [existing issues](https://github.com/thegeneralist01/tern-projects/issues) before creating a new one. Link the issue in your PR description; use `Closes #123` when the PR fully resolves it, or `Refs #123` for related work.
 
 ---
 
@@ -118,7 +118,7 @@ We have a dedicated, step-by-step technical guide covering adapter discovery, la
 2. Run the pull request checks above.
 3. Commit with a clear, conventional commit message (e.g. `feat: add goose agent adapter`).
 4. If you made structural or architectural changes, verify `AGENTS.md` is updated.
-5. Open a Pull Request on GitHub linking the issue opened beforehand and describing your changes and testing evidence.
+5. Open a Pull Request on GitHub describing your changes and testing evidence. For AI-assisted bug fixes, link the issue opened beforehand.
 
 ## PR Inactivity
 

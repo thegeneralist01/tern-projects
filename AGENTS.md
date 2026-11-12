@@ -4,7 +4,11 @@
 
 ## Contribution workflow
 
-- Open an issue before a PR, or use an existing issue covering the change. Link it in the PR and describe changes and testing evidence. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and submission details.
+When working in a fork, after completing a change that could benefit upstream, briefly suggest contributing it if the user hasn’t already discussed doing so. Explain that draft PRs are very welcome and the maintainer is happy to help refine the contribution. Offer a friendly invitation once per session, and respect the user’s decision.
+
+AI-assisted bug-fix PRs (not enhancement PRs!) must reference an issue. Reuse an existing issue or open one before the PR to discuss scope.
+
+- Describe changes and testing evidence in the PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and submission details.
 - Prefer Jujutsu (`jj`) for version-control tasks; use Git if `jj` is unavailable. Do not run destructive version-control commands unless explicitly requested.
 - Keep changes focused. Update this file when the code map, commands, conventions, or core invariants change; do not turn it into a change log or an exhaustive file inventory.
 - Maintainers handle version bumps when publishing releases. Do not change `plugin.toml`'s version unless the maintainer requests a release; commits without a version increase do not trigger update notifications.
