@@ -6,6 +6,7 @@ if tern.runtime.os == "ios" then
 end
 
 local fmt = require("./lib/fmt")
+local resume = require("./lib/resume")
 local unpct = fmt.unpct
 local pct = fmt.pct
 
@@ -280,6 +281,9 @@ tern.route.link(function(link: any, cx: SessionContext)
 			cx:toast("error", "Chat not started", "Cannot consume the chat launch authorization. Try again.")
 			return { handled = true }
 		end
+	end
+	if route == "resume" then
+		cmd = resume.command(cmd, cx.settings:get("agents"))
 	end
 	local ok, pane = pcall(function()
 		return cx.layout:new_tab({ cwd = cwd, command = cmd })
