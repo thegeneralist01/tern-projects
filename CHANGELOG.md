@@ -4,6 +4,8 @@ All notable changes to `tern-projects` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.14] — 2026-11-13
+
 ### Fixed
 - **Remote chat launches**: start and resume chats through the host CLI in the originating panel's window and session, preserving ACP preferences. Link fallback receives a fresh authorization lifetime after CLI failure.
 
