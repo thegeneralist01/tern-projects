@@ -153,6 +153,7 @@ Thanks to everyone who has contributed to tern-projects.
 <a href="https://github.com/Zestful-ss"><img src="docs/contributors/Zestful-ss.png" width="48" height="48" alt="@Zestful-ss" title="@Zestful-ss"></a>
 <a href="https://github.com/panosAthDBX"><img src="docs/contributors/panosAthDBX.png" width="48" height="48" alt="@panosAthDBX" title="@panosAthDBX"></a>
 <a href="https://github.com/mtardal"><img src="docs/contributors/mtardal.png" width="48" height="48" alt="@mtardal" title="@mtardal"></a>
+<a href="https://github.com/122yjs"><img src="docs/contributors/122yjs.png" width="48" height="48" alt="@122yjs" title="@122yjs"></a>
 </p>
 
 ---
