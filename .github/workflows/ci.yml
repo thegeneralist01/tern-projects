@@ -58,7 +58,7 @@ jobs:
             "https://github.com/luau-lang/luau/releases/download/$LUAU_VERSION/luau-ubuntu.zip"
           printf '%s  %s\n' "$LUAU_SHA256" "$TOOL_DIR/luau.zip" | sha256sum --check --strict
           unzip -q "$TOOL_DIR/luau.zip" -d "$TOOL_DIR/luau"
-          chmod +x "$TOOL_DIR/luau/luau-compile"
+          chmod +x "$TOOL_DIR/luau/luau-compile" "$TOOL_DIR/luau/luau"
           curl --fail --silent --show-error --location --output "$TOOL_DIR/actionlint.tar.gz" \
             "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$TOOL_DIR/actionlint.tar.gz" | sha256sum --check --strict
@@ -70,6 +70,8 @@ jobs:
           printf '%s\n' "$TOOL_DIR" "$TOOL_DIR/luau" "$TOOL_DIR/shellcheck-v$SHELLCHECK_VERSION" >> "$GITHUB_PATH"
       - name: Check Luau syntax and strict headers
         run: python3 scripts/check-luau.py
+      - name: Check chat launch authorization
+        run: python3 scripts/test_chat_launch.py
       - name: Check PR inactivity transitions
         run: python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
       - name: Validate GitHub Actions workflows
