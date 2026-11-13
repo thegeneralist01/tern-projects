@@ -22,6 +22,7 @@ Prerequisites: Tern, stable Rust, and the check tools listed below. Run commands
 cargo test --locked --manifest-path indexer/Cargo.toml # Backend unit and integration tests
 cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
 python3 scripts/check-luau.py                          # Requires luau-compile 0.745
+python3 scripts/test_chat_launch.py                    # Requires Luau CLI 0.745
 actionlint                                           # Requires actionlint 1.7.12
 shellcheck scripts/*.sh                              # Requires ShellCheck 0.11.0
 tern plugin types .                                  # Regenerate tern.d.luau after Tern updates
@@ -44,7 +45,7 @@ tern plugin reload                                   # Reload plugin in running 
 | `blocks/panel.luau`, `styles.css` | Projects, Search, and Settings UI. |
 | `lib/backend.luau`, `lib/cli.luau` | Cargo builds, binary cache, request queue, CLI JSON, deletion/update coordination. |
 | `lib/updates.luau` | Host-only update checks, consent-gated installation, recovery. |
-| `lib/resume.luau` | Window-side ACP resume command selection using Tern ACP preferences. |
+| `lib/chat-launch.luau`, `lib/resume.luau` | Origin-targeted host tab launches and ACP resume command selection. |
 | `lib/input.luau`, `lib/textfield.luau` | Shortcuts, UTF-16 native edits, UTF-8 text fields. |
 | `lib/ui.luau`, `lib/picker.luau`, `lib/project-editor.luau`, `lib/fmt.luau` | Shared widgets, selection sheets, project drafts/directory browser, formatting. |
 | `indexer/src/main.rs`, `indexer/src/model.rs`, `indexer/src/text.rs`, `indexer/src/git.rs` | CLI entry, data types, quoting/timestamps, Git/worktree resolution. |
@@ -99,5 +100,6 @@ For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) r
 - `tern-projects://shortcuts?`, `keyboard?`, and `keyconfig?` require a live focused Projects panel in the calling window. They only report bindings or invoke fixed `preferences` / `open_config` commands; never accept arbitrary commands or file paths.
 - While Settings is open, request a keymap snapshot every second. Stop stale polling through pane/generation liveness; identical snapshots must not redraw or disturb dialogs. Tern's Keyboard editor may omit unbound plugin actions: expose copyable IDs and the native settings-file command without inventing defaults.
 - Fresh chats use the primary project directory as `cwd`. Pass additional folders through supported harness flags (such as `--add-dir`), or warn before launching primary-only. Quote commands per OS: `shell_join` on Unix, Base64-encoded command blocks on Windows.
-- Fresh-chat URLs carry a per-nonce `launch:<nonce>` claim bound to the exact pane, command, and directory. Claims expire after 10 seconds and must be consumed before tab creation; they never replace a live focused Projects panel on the local host.
-- Resolve Codex/Claude Resume commands at the window launch boundary using current `agents.auto_acp` and `agents.keep_tui`. Preserve the backend/copy command and all launch authorization checks; do not force ACP for users who opted out.
+- Open chat tabs through the host CLI, resolving the panel's exact window and session before creation and focus. Never fall back to the CLI's default target when the originating panel cannot be found.
+- Create fallback `launch:<nonce>` claims only after the CLI fails. Bind each claim to the exact pane, command, and directory; expire it after 10 seconds and consume it before tab creation. Link fallback still requires a live focused Projects panel on the local host.
+- Resolve Codex/Claude Resume commands at both launch boundaries: current persisted host ACP preferences for the CLI, and current window preferences for link fallback. Preserve backend/copy commands and `agents.auto_acp` / `agents.keep_tui` opt-outs.

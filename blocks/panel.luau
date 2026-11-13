@@ -9,6 +9,7 @@ local editor = require("../lib/project-editor")
 local picker = require("../lib/picker")
 local c = require("../lib/ui")
 local updates = require("../lib/updates")
+local chat_launch = require("../lib/chat-launch")
 
 local PAGE = 150 -- rendered list rows; Tern virtualizes (and unwires row actions) past 200
 local SEARCH_PAGE = 50
@@ -306,6 +307,13 @@ local function refresh(s: any)
 		if err then s.error = err; s.error_reload = false; s.cx:render() else s.indexed_at = os.time(); reload(s) end
 	end)
 end
+local function open_chat_tab(s: any, cwd: string, command: string, resuming: boolean, fallback: () -> ())
+	if cwd == "" or command == "" or string.find(cwd, "[%z\r\n]") or string.find(command, "[%z\r\n]") then
+		toast(s, "error", "Invalid chat launch", "The working directory or command is missing or invalid.")
+		return
+	end
+	chat_launch.open(s.cx.pane, cwd, command, resuming, function() return live(s) end, fallback)
+end
 local function resume(s: any, chat: any)
 	local r = chat.resume
 	if not r then return end
@@ -315,7 +323,12 @@ local function resume(s: any, chat: any)
 			if result.status ~= 0 then toast(s, "error", "Couldn't resume chat", if result.stderr ~= "" then result.stderr else result.stdout) end
 		end)
 	elseif r.command and r.command ~= "" then
-		s.cx:open("tern-projects://resume?cwd=" .. fmt.pct(chat.cwd or "") .. "&cmd=" .. fmt.pct(r.command))
+		local cwd = chat.cwd or ""
+		local cmd = r.command
+		open_chat_tab(s, cwd, cmd, true, function()
+			if not live(s) then return end
+			s.cx:open("tern-projects://resume?cwd=" .. fmt.pct(cwd) .. "&cmd=" .. fmt.pct(cmd))
+		end)
 	end
 end
 local function copy(s: any, text: string, what: string)
@@ -674,24 +687,26 @@ local function launch_route(s: any, plan: any)
 	if not live(s) then return end
 	if type(plan.cwd) ~= "string" or plan.cwd == "" or type(plan.command) ~= "string" or plan.command == "" or string.find(plan.cwd, "[%z\r\n]") or string.find(plan.command, "[%z\r\n]") then s.error = "The launch plan was incomplete."; return end
 	clear_launch_claim(s)
-	launch_nonce += 1
-	local created = os.time()
-	local nonce = tostring(created) .. "-" .. tostring(tern.now()) .. "-" .. tostring(s.cx.pane) .. "-" .. tostring(launch_nonce)
-	local key = "launch:" .. nonce
-	local ok, err = pcall(tern.kv.set, key, {pane = s.cx.pane, cwd = plan.cwd, command = plan.command, created = created})
-	if not ok then s.error = "Cannot authorize chat launch: " .. tostring(err); return end
-	-- Each request owns its own short-lived, payload-bound key. A different window cannot
-	-- overwrite it, and the route must consume it before creating a tab.
-	local claim: any = {key = key}
-	s.launch_claim = claim
-	claim.timer = tern.timer(LAUNCH_CLAIM_LIFETIME * 1000, function()
-		if s.launch_claim == claim then clear_launch_claim(s) end
-	end)
 	s.picker = nil; s.confirm = nil; s.pending_plan = nil
-	local opened, failure = pcall(function()
-		s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
+	open_chat_tab(s, plan.cwd, plan.command, false, function()
+		if not live(s) then return end
+		-- The CLI may have used its full timeout. Give the fallback a fresh lifetime.
+		launch_nonce += 1
+		local created = os.time()
+		local nonce = tostring(created) .. "-" .. tostring(tern.now()) .. "-" .. tostring(s.cx.pane) .. "-" .. tostring(launch_nonce)
+		local key = "launch:" .. nonce
+		local ok, err = pcall(tern.kv.set, key, {pane = s.cx.pane, cwd = plan.cwd, command = plan.command, created = created})
+		if not ok then s.error = "Cannot authorize chat launch: " .. tostring(err); s.cx:render(); return end
+		local claim: any = {key = key}
+		s.launch_claim = claim
+		claim.timer = tern.timer(LAUNCH_CLAIM_LIFETIME * 1000, function()
+			if s.launch_claim == claim then clear_launch_claim(s) end
+		end)
+		local opened, failure = pcall(function()
+			s.cx:open("tern-projects://launch?n=" .. fmt.pct(nonce) .. "&cwd=" .. fmt.pct(plan.cwd) .. "&cmd=" .. fmt.pct(plan.command))
+		end)
+		if not opened then clear_launch_claim(s); s.error = "Cannot open chat launch: " .. tostring(failure); s.cx:render() end
 	end)
-	if not opened then clear_launch_claim(s); s.error = "Cannot open chat launch: " .. tostring(failure) end
 end
 launch_plan = function(s: any, harness: string, from_default: boolean)
 	local target = s.launch_target

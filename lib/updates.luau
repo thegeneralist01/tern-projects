@@ -531,4 +531,6 @@ function updates.install(expected_version: string)
 	start_install(expected_version, false)
 end
 
+updates.tern_executable = installer_executable
+
 return updates

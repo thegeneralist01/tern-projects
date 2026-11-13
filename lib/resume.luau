@@ -13,7 +13,7 @@ function resume.command(command: string, agents: AgentSettings): string
 	for agent, prefix in prefixes do
 		if string.sub(command, 1, #prefix) == prefix and not table.find(agents.keep_tui or {}, agent) then
 			-- Keep the backend's already-quoted session argument intact. Only the
-			-- window's launch command changes; the panel's copy command does not.
+			-- launch command changes; the panel's copy command does not.
 			return "tern acp " .. agent .. " --resume " .. string.sub(command, #prefix + 1)
 		end
 	end
