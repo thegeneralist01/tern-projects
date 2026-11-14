@@ -130,6 +130,7 @@ end
 local reload: (any) -> ()
 local action: (any, string, string?) -> ()
 local end_launch_wait: (any) -> ()
+local follow_preview: (any) -> ()
 
 -- Launch waiting: New chat reports a stage and a deadline instead of going quiet ------
 local LAUNCH_TIMEOUT = {["launch-plan"] = 15000, harnesses = 65000}
@@ -266,6 +267,8 @@ reload = function(s: any)
 				s.sel = s.order[if s.search_edge == "last" then #s.order else 1]
 				s.search_edge = nil
 			end
+			-- A rebuild or page change can move the selection without input; the drawer follows it.
+			follow_preview(s)
 		end
 		s.cx:render()
 	end
@@ -335,6 +338,98 @@ local function copy(s: any, text: string, what: string)
 	if text == "" then return end
 	s.cx:copy(text)
 	toast(s, "success", "Copied " .. what)
+end
+
+-- Chat preview -------------------------------------------------------------------------------
+-- A read-only drawer over the lower part of the panel; while open it follows the selection.
+local PREVIEW_DELAY = 150 -- ms; arrowing through the list fetches only the chat it settles on
+local function previewable(chat: any): boolean
+	return chat ~= nil and (chat.agent == "omp" or chat.agent == "claude")
+end
+local function preview_title(title: any): string
+	return if type(title) == "string" and title ~= "" then title else "Chat preview"
+end
+-- One transcript request per panel: while it runs, only the newest wanted chat is remembered and
+-- fetched when the answer lands. The drawer keeps the chat it shows until a new transcript arrives.
+local function fetch_preview(s: any)
+	local p = s.preview
+	if s.preview_busy or not p.pending then return end
+	local chat = p.pending
+	p.pending = nil
+	-- The panel owns the slot: an answer for a drawer closed meanwhile still frees it.
+	s.preview_busy = true
+	p.seq += 1
+	local seq = p.seq
+	cli.request({op = "transcript", uid = chat.uid}, function(data, err)
+		if not live(s) then return end
+		s.preview_busy = false
+		-- A cleared drawer or a newer wanted chat drops this answer; seq also drops reopened ones.
+		if s.preview == p and p.seq == seq and p.want == chat.uid then
+			local ok = err == nil and type(data) == "table" and type(data.turns) == "table"
+			p.agent = chat.agent
+			p.title = if ok and type(data.title) == "string" and data.title ~= "" then data.title else preview_title(chat.title)
+			p.data = if ok then data else nil
+			p.error = if ok then nil else (err or "The backend returned no transcript.")
+			p.hint = nil
+			s.cx:render()
+		end
+		if s.preview and s.preview.pending then fetch_preview(s) end
+	end)
+end
+local function load_preview(s: any, chat: any, delay: number?)
+	local p = s.preview
+	p.pending = chat
+	p.want = chat.uid
+	p.hint = nil
+	if delay then
+		tern.timer(delay, function()
+			if not live(s) or s.preview ~= p or p.pending ~= chat then return end
+			fetch_preview(s)
+		end)
+	else
+		fetch_preview(s)
+	end
+end
+local function close_preview(s: any)
+	s.preview = nil
+end
+-- The drawer no longer shows a chat: drop what it shows and anything still on its way.
+local function clear_preview(s: any)
+	local p = s.preview
+	if not p or (p.want == nil and p.pending == nil and p.data == nil and p.error == nil) then return end
+	p.seq += 1
+	p.want = nil
+	p.pending = nil
+	p.data = nil
+	p.error = nil
+	p.agent = nil
+	p.title = preview_title(nil)
+	p.hint = "No chat selected."
+end
+-- Space, the dock button and the menu open the drawer on `chat`, or close it when it already shows that chat.
+local function toggle_preview(s: any, chat: any)
+	if s.preview and s.preview.want == chat.uid then close_preview(s); return end
+	if not previewable(chat) then toast(s, "info", "Preview is available for OMP and Claude Code chats"); return end
+	if not s.preview then
+		-- Opening shrinks the list; bring the selected row back into view above the drawer.
+		s.preview = {seq = 0, title = preview_title(chat.title), agent = chat.agent, reveal = true}
+		local p = s.preview
+		tern.timer(50, function()
+			if not live(s) or s.preview ~= p then return end
+			p.reveal = nil
+			s.cx:render()
+		end)
+	end
+	load_preview(s, chat)
+end
+follow_preview = function(s: any)
+	if not s.preview then return end
+	local row = s.rows[s.sel or ""]
+	-- A project row or no selection at all leaves nothing to follow: stale text must not stay.
+	if not row or row.kind ~= "session" then clear_preview(s); return end
+	-- Other harnesses still replace the shown chat, with the backend's "not available" notice.
+	if row.ref.uid == s.preview.want then return end
+	load_preview(s, row.ref, PREVIEW_DELAY)
 end
 
 -- Project editor -------------------------------------------------------------------------
@@ -817,7 +912,9 @@ local function menu_entries(s: any, key: string): {string}
 	local row = s.rows[key]
 	if not row then return {} end
 	if row.kind == "session" then
-		return {"resume", "copy-resume-command", "copy-chat-id", "-", if row.ref.pinned then "unpin" else "pin", "move-to-project…", if row.ref.archived then "restore" else "archive", "-", if s.mode == "search" then "search-options" else "panel-options", "-", "delete-permanently…"}
+		local ids = {"resume", "copy-resume-command", "copy-chat-id", "-", if row.ref.pinned then "unpin" else "pin", "move-to-project…", if row.ref.archived then "restore" else "archive", "-", if s.mode == "search" then "search-options" else "panel-options", "-", "delete-permanently…"}
+		if previewable(row.ref) then table.insert(ids, 2, "preview") end
+		return ids
 	elseif row.kind == "project" then
 		if s.view == "mine" then return {"new-chat", "new-chat-with…", "-", "edit-project…", "remove-project…", "-", "panel-options"} end
 		local entries = {"new-chat", "new-chat-with…", "-", "save-as-project…"}
@@ -836,6 +933,7 @@ local function menu_ids(s: any, key: string): {string}
 end
 local MENU_META: {[string]: any} = {
 	["resume"] = {label = "Resume", icon = "play", hint = {"enter"}},
+	["preview"] = {label = "Preview", icon = "eye"},
 	["copy-resume-command"] = {label = "Copy resume command", icon = "copy", hint = {"ctrl", "y"}},
 	["copy-chat-id"] = {label = "Copy chat ID", icon = "hash"},
 	["pin"] = {label = "Pin", icon = "pin"},
@@ -1208,6 +1306,7 @@ local function confirm_action(s: any, id: string)
 end
 local function chat_action(s: any, act: string, chat: any)
 	if act == "resume" then resume(s, chat)
+	elseif act == "preview" then toggle_preview(s, chat)
 	elseif act == "copy-resume-command" then copy(s, chat.resume and chat.resume.command or "", "resume command")
 	elseif act == "copy-chat-id" then copy(s, chat.id or chat.uid, "chat ID")
 	elseif act == "pin" or act == "unpin" then
@@ -1235,6 +1334,7 @@ local function row_action(s: any, act: string, key: string)
 end
 action = function(s: any, act: string, value: string?)
 	if act == "dismiss-error" then s.error = nil; return end
+	if act == "preview-close" then close_preview(s); return end
 	if act == "cancel-launch" then
 		if not s.launch_pending then return end
 		cancel_flow(s)
@@ -1323,9 +1423,12 @@ action = function(s: any, act: string, value: string?)
 		end
 	elseif act == "archived" then s.settings_focus = "archived"; archived_picker(s)
 	elseif act == "ignored" then s.settings_focus = "ignored"; ignored_picker(s)
-	elseif act == "resume" or act == "copy-resume-command" or act == "copy-chat-id" then
+	elseif act == "resume" or act == "preview" or act == "copy-resume-command" or act == "copy-chat-id" then
 		-- Native menus name the clicked row; the dock and shortcuts act on the selection.
-		local chat = find_chat(s, if value then fmt.unpct(value) else (s.sel or ""))
+		local key = if value then fmt.unpct(value) else (s.sel or "")
+		-- A preview follows the selection, so previewing a clicked row selects it.
+		if act == "preview" and s.rows[key] then s.sel = key end
+		local chat = find_chat(s, key)
 		if chat then chat_action(s, act, chat) end
 	elseif act == "edit-selected" then
 		local row = s.rows[s.sel or ""]
@@ -1558,7 +1661,8 @@ local function list_view(s: any): any
 		end
 	end
 	local sel_row = s.rows[s.sel or ""]
-	local selected = if sel_row and sel_row.kind ~= "cardbtn" then "main.rows." .. s.sel else nil
+	-- `reveal` drops the selection for one frame: the list scrolls a row into view only when `selected` changes.
+	local selected = if sel_row and sel_row.kind ~= "cardbtn" and not (s.preview and s.preview.reveal) then "main.rows." .. s.sel else nil
 	local empty = if not s.loaded then {ui.span(if s.mode == "search" then "Searching…" else "Loading chats…", "muted")} else nil
 	return ui.node("list", {key = "rows", role = "tern-projects.rows", max = 1, selected = selected, empty = empty}, items)
 end
@@ -1672,6 +1776,7 @@ local function settings_view(s: any): any
 		{"Move 10 rows / cross result pages", {"page_up", "page_down"}},
 		{"Expand / collapse project", {"left", "right"}},
 		{"Resume chat / toggle project", {"enter"}},
+		{"Preview chat (Projects)", {"space"}},
 		{"Actions / search or panel options", {"shift", "f10"}},
 		{"New chat", {mod, "n"}},
 		{"New chat with…", {"shift", mod, "n"}},
@@ -1740,11 +1845,14 @@ local function dock_view(s: any): any?
 		if type(r.last_assistant) == "string" and r.last_assistant ~= "" then
 			table.insert(kids, ui.node("text", {text = r.last_assistant, lines = 2, role = "tern-projects.dock-preview"}))
 		end
-		table.insert(kids, ui.el("div", {class = "tp-dock-a"}, {
-			c.button("Resume", "resume", {variant = "primary", size = "sm", icon = "play", title = "Resume (⏎)"}),
-			if narrow then c.icon_button("copy", "copy-resume-command", "Copy resume command (Ctrl+Y)", {size = "sm"}) else c.button("Copy command", "copy-resume-command", {size = "sm", icon = "copy", title = "Copy resume command (Ctrl+Y)"}),
-			c.icon_button("more", "actions", "More actions (⇧F10)", {size = "sm"}),
-		}))
+		local buttons = {c.button("Resume", "resume", {variant = "primary", size = "sm", icon = "play", title = "Resume (⏎)"})}
+		if previewable(r) then
+			local hint = if s.mode == "projects" then "Preview (Space)" else "Preview"
+			table.insert(buttons, if narrow then c.icon_button("eye", "preview", hint, {size = "sm"}) else c.button("Preview", "preview", {size = "sm", icon = "eye", title = hint}))
+		end
+		table.insert(buttons, if narrow then c.icon_button("copy", "copy-resume-command", "Copy resume command (Ctrl+Y)", {size = "sm"}) else c.button("Copy command", "copy-resume-command", {size = "sm", icon = "copy", title = "Copy resume command (Ctrl+Y)"}))
+		table.insert(buttons, c.icon_button("more", "actions", "More actions (⇧F10)", {size = "sm"}))
+		table.insert(kids, ui.el("div", {class = "tp-dock-a"}, buttons))
 	else
 		local mine = s.view == "mine"
 		local folders = if mine then (r.folders or {}) else {r.root}
@@ -1806,6 +1914,37 @@ local function menu_view(s: any): any
 		ui.node("list", {key = "list", selected = "layer.menu.list." .. m.selected}, kids),
 	})
 end
+-- Your turns on the right, the agent's on the left.
+local function preview_view(s: any): any
+	local p = s.preview
+	local data = p.data
+	local kids: {any} = {}
+	if p.error then
+		table.insert(kids, ui.el("div", {key = "error", class = "tp-chat-msg agent", text = fmt.error(p.error)}))
+	elseif not data then
+		table.insert(kids, ui.el("div", {key = "loading", class = "tp-chat-meta", text = p.hint or "Loading…"}))
+	else
+		local label = if type(data.label) == "string" then data.label else "Agent"
+		table.insert(kids, ui.el("div", {key = "meta", class = "tp-chat-meta", text = label .. " · " .. fmt.path(tostring(data.cwd or ""))}))
+		local hidden = tonumber(data.hidden) or 0
+		if hidden > 0 then
+			table.insert(kids, ui.el("div", {key = "hidden", class = "tp-chat-meta", text = string.format("%d earlier message%s omitted", hidden, if hidden == 1 then "" else "s")}))
+		end
+		for i, turn in data.turns do
+			local user = turn.role == "user"
+			table.insert(kids, ui.el("div", {key = "t" .. tostring(i), class = "tp-chat-msg " .. (if user then "user" else "agent")}, {
+				ui.el("div", {class = "tp-chat-who", text = if user then "You" else label}),
+				ui.md(turn.markdown),
+			}))
+		end
+		if #data.turns == 0 then table.insert(kids, ui.el("div", {key = "empty", class = "tp-chat-meta", text = "No messages to show."})) end
+	end
+	-- Non-modal: the list above stays clickable, and keys still reach the panel.
+	return ui.node("overlay", {key = "preview", side = "bottom", size = 0.6, head = p.title, icon = fmt.agent_icon(p.agent or ""), ["end"] = "layer.preview.close", aria = "Chat preview", role = "tern-projects.preview"}, {
+		c.icon_button("x", "preview-close", "Close preview (Esc)", {key = "close", variant = "ghost", size = "xs"}),
+		ui.el("div", {key = "chat", class = "tp-chat"}, kids),
+	})
+end
 local function layer_view(s: any): any?
 	if s.editor then
 		local d = s.editor
@@ -1813,9 +1952,10 @@ local function layer_view(s: any): any?
 		return ui.col({editor.view(d, s.busy)})
 	end
 	if s.picker then return ui.col({picker.view(s.picker, s.busy)}) end
-	if s.confirm then return ui.col({confirm_view(s)}) end
-	if s.menu then return ui.col({menu_view(s)}) end
-	return nil
+	local kids: {any} = {}
+	if s.preview and s.mode ~= "settings" then table.insert(kids, preview_view(s)) end
+	if s.confirm then table.insert(kids, confirm_view(s)) elseif s.menu then table.insert(kids, menu_view(s)) end
+	return if #kids > 0 then ui.col(kids) else nil
 end
 
 -- Block --------------------------------------------------------------------------------------------
@@ -1890,15 +2030,24 @@ local panel: BlockDef<any> = {
 			table.insert(children, list_view(s))
 			local pg = pager(s)
 			if pg then table.insert(children, pg) end
+			-- The drawer covers the lower part: the list keeps the selection above it.
+			if s.preview then table.insert(children, ui.el("div", {key = "preview-space", class = "tp-preview-space"})) end
 		end
 		local result: any = {main = ui.col(children)}
-		if s.mode ~= "settings" then result.dock = dock_view(s) end
+		-- The drawer shows the selected chat, so the dock it would cover is left out.
+		if s.mode ~= "settings" and not s.preview then result.dock = dock_view(s) end
 		result.layer = layer_view(s)
 		return result
 	end,
 	key = function(s, k, _cx)
 		if k.name == "escape" and s.launch_pending then action(s, "cancel-launch", nil); return true end
-		if s.busy and not (s.confirm and (s.confirm.kind == "update" or s.confirm.kind == "auto-install")) then if k.name == "escape" then hide_busy(s) end; return true end
+		if s.busy and not (s.confirm and (s.confirm.kind == "update" or s.confirm.kind == "auto-install")) then
+			if k.name == "escape" then
+				-- Once the busy dialog is hidden, Esc closes the drawer that is still on screen.
+				if s.preview and not (s.confirm or s.picker or s.editor or s.menu) then close_preview(s) else hide_busy(s) end
+			end
+			return true
+		end
 		if s.editor then
 			local d = s.editor
 			if d.browser then
@@ -1917,6 +2066,7 @@ local panel: BlockDef<any> = {
 		end
 		if s.confirm then return confirm_key(s, k) end
 		if s.menu then return menu_key(s, k) end
+		if k.name == "escape" and s.preview and s.mode ~= "settings" then close_preview(s); return true end
 		local name = k.name
 		if name == "tab" then
 			local stops = {"mine", "discovered", "search", "settings"}
@@ -1942,6 +2092,8 @@ local panel: BlockDef<any> = {
 		if name == "enter" then activate(s, s.sel); return true end
 		if name == "y" and k.ctrl then action(s, "copy-resume-command", nil); return true end
 		if s.mode == "projects" then
+			-- Space previews here only: in Search it types into the query.
+			if name == "space" then action(s, "preview", nil); return true end
 			if name == "left" or name == "right" then
 				local row = s.rows[s.sel or ""]
 				if row and row.kind == "project" then s.expanded[s.sel] = name == "right"; rebuild(s)
@@ -2046,4 +2198,16 @@ local panel: BlockDef<any> = {
 		cx:render()
 	end,
 }
+
+-- An open preview follows the selection, whichever input moved it.
+local handle_key, handle_event = panel.key, panel.event
+panel.key = function(s, k, cx)
+	local handled = handle_key(s, k, cx)
+	follow_preview(s)
+	return handled
+end
+panel.event = function(s, ev, cx)
+	handle_event(s, ev, cx)
+	follow_preview(s)
+end
 return panel

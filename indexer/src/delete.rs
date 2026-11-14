@@ -327,7 +327,7 @@ fn valid_id(id: &str) -> Result<()> {
 }
 
 /// Reject symlinks in every component, not just the last path element.
-fn safe_path(root: &Path, path: &Path, directory: bool) -> Result<PathBuf> {
+pub(crate) fn safe_path(root: &Path, path: &Path, directory: bool) -> Result<PathBuf> {
     ensure!(
         root.is_absolute() && path.is_absolute(),
         "Source store must be an absolute path"
