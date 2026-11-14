@@ -101,7 +101,7 @@ fn main() {
             }))
         }
         Command::Projects { per, recent } => {
-            emit(sessions::snapshot(&db_path, &home_str, "discovered", per, recent))
+            emit(sessions::snapshot(&db_path, &home_str, "discovered", per, recent, None))
         }
         Command::Library => emit(run_library(&db_path, &home)),
         Command::MigrateData { from } => emit(migrate_data(&db_path, &from)),
@@ -296,7 +296,14 @@ fn run_library(db_path: &Path, home: &Path) -> Result<serde_json::Value> {
         .context("invalid library request")?;
     let home_str = home.to_string_lossy();
     match request {
-        Request::Snapshot { view, per, recent } => sessions::snapshot(db_path, &home_str, &view, per, recent),
+        Request::Snapshot { view, per, recent, recent_cwd } => sessions::snapshot(
+            db_path,
+            &home_str,
+            &view,
+            per,
+            recent,
+            recent_cwd.as_deref(),
+        ),
         Request::ProjectSave { id, name, icon, folders, cwd } => {
             let (index, mut lib) = sessions::open(db_path)?;
             let saved = lib.save_project(id.as_deref(), &name, &icon, &folders, &cwd, home, &index)?;

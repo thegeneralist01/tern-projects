@@ -23,6 +23,8 @@ cargo test --locked --manifest-path indexer/Cargo.toml # Backend unit and integr
 cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
 python3 scripts/check-luau.py                          # Requires luau-compile 0.745
 python3 scripts/test_chat_launch.py                    # Requires Luau CLI 0.745
+python3 scripts/test_recents.py                        # Requires Luau CLI 0.745; Recents scope, no model
+python3 scripts/test_follow_cwd.py                     # Requires Luau CLI 0.745; panel folder follows the tab's terminal, no window
 actionlint                                           # Requires actionlint 1.7.12
 shellcheck scripts/*.sh                              # Requires ShellCheck 0.11.0
 tern plugin types .                                  # Regenerate tern.d.luau after Tern updates
@@ -41,11 +43,12 @@ tern plugin reload                                   # Reload plugin in running 
 | Area | Responsibility |
 | --- | --- |
 | `host.luau` | Host process: start update checks, register the panel, manage shared state. |
-| `window.luau` | Window process: shortcuts, native settings, toggles, `tern-projects://launch` and `tern-projects://resume` routes. |
+| `window.luau` | Window process: shortcuts, native settings, toggles, `tern-projects://launch`, `tern-projects://resume` and `tern-projects://follow` routes. |
 | `blocks/panel.luau`, `styles.css` | Projects, Search, and Settings UI. |
 | `lib/backend.luau`, `lib/cli.luau` | Cargo builds, binary cache, request queue, CLI JSON, deletion/update coordination. |
 | `lib/updates.luau` | Host-only update checks, consent-gated installation, recovery. |
 | `lib/chat-launch.luau`, `lib/resume.luau` | Origin-targeted host tab launches and ACP resume command selection. |
+| `lib/follow-cwd.luau` | Window-only: per-tab last focused terminal/agent, pushes its folder to the tab's panels; `follow?` route for Refresh. |
 | `lib/input.luau`, `lib/textfield.luau` | Shortcuts, UTF-16 native edits, UTF-8 text fields. |
 | `lib/ui.luau`, `lib/picker.luau`, `lib/project-editor.luau`, `lib/fmt.luau` | Shared widgets, selection sheets, project drafts/directory browser, formatting. |
 | `indexer/src/main.rs`, `indexer/src/model.rs`, `indexer/src/text.rs`, `indexer/src/git.rs` | CLI entry, data types, quoting/timestamps, Git/worktree resolution. |
@@ -98,6 +101,7 @@ For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) r
 
 - Global shortcuts belong to Tern's `settings.json` `keybinds`. Report `cx.actions:keys()` effective bindings to Settings; never store a second keymap in the library, KV, or pane state. Keep panel-only actions/navigation as a separate fixed reference.
 - `tern-projects://shortcuts?`, `keyboard?`, and `keyconfig?` require a live focused Projects panel in the calling window. They only report bindings or invoke fixed `preferences` / `open_config` commands; never accept arbitrary commands or file paths.
+- `tern-projects://follow?` must not require a focused panel (Refresh and panel init ask from the background). It only answers the calling pane, with the folder of a shell in that pane's own tab.
 - While Settings is open, request a keymap snapshot every second. Stop stale polling through pane/generation liveness; identical snapshots must not redraw or disturb dialogs. Tern's Keyboard editor may omit unbound plugin actions: expose copyable IDs and the native settings-file command without inventing defaults.
 - Fresh chats use the primary project directory as `cwd`. Pass additional folders through supported harness flags (such as `--add-dir`), or warn before launching primary-only. Quote commands per OS: `shell_join` on Unix, Base64-encoded command blocks on Windows.
 - Open chat tabs through the host CLI, resolving the panel's exact window and session before creation and focus. Never fall back to the CLI's default target when the originating panel cannot be found.

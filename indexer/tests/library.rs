@@ -720,3 +720,142 @@ fn source_ignore_through_removed_alias_keeps_hiding_both_forms() {
     library(&db, &home, json!({"op":"source-unignore","path":rule}));
     assert_eq!(total(&db, &home), 3);
 }
+
+fn scoped_recents(db: &Path, home: &Path, cwd: Option<&Path>) -> Vec<String> {
+    let mut request = json!({"op":"snapshot","view":"mine","per":25,"recent":15});
+    if let Some(cwd) = cwd {
+        request["recent_cwd"] = json!(cwd);
+    }
+    library(db, home, request)["recent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["uid"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn recents_scope_to_the_panel_folder_like_worktree_search() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let repo = home.join("repo");
+    let sub = repo.join("sub");
+    let other = home.join("other");
+    let empty = home.join("empty");
+    for folder in [&sub, &other, &empty, &repo.join(".git")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    // A repository marker is enough for Worktree scope: chats started in `repo` and in
+    // `repo/sub` share one worktree root without running Git.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    for i in 0..10 {
+        seed(&home, &format!("root{i}"), &repo, 100 + i);
+        seed(&home, &format!("sub{i}"), &sub, 200 + i);
+    }
+    for i in 0..3 {
+        seed(&home, &format!("other{i}"), &other, 300 + i);
+    }
+    run(&db, &home, &["index"]);
+    // Absent `recent_cwd` keeps the global newest-first list, capped at 15.
+    let all = scoped_recents(&db, &home, None);
+    assert_eq!(all.len(), 15);
+    assert_eq!(all.first().map(String::as_str), Some("omp:other2"));
+    assert!(all.iter().any(|uid| uid == "omp:other0"));
+    // This folder keeps the 15 newest chats under the repository worktree, including
+    // chats started in its subfolders, exactly as Search's Worktree scope does.
+    let scoped = scoped_recents(&db, &home, Some(&sub));
+    assert_eq!(scoped.len(), 15);
+    assert!(scoped
+        .iter()
+        .all(|uid| uid.starts_with("omp:sub") || uid.starts_with("omp:root")));
+    assert_eq!(scoped.first().map(String::as_str), Some("omp:sub9"));
+    let search = run(
+        &db,
+        &home,
+        &[
+            "query",
+            "--scope",
+            "workspace",
+            "--cwd",
+            sub.to_str().unwrap(),
+            "--limit",
+            "15",
+            "--q",
+            "",
+        ],
+    );
+    assert_eq!(scoped, uids(&search["sessions"]));
+    assert_eq!(
+        scoped_recents(&db, &home, Some(&other)),
+        ["omp:other2", "omp:other1", "omp:other0"]
+    );
+    assert!(scoped_recents(&db, &home, Some(&empty)).is_empty());
+    // Archived chats stay out of both scopes, and the global list still hides them.
+    library(
+        &db,
+        &home,
+        json!({"op":"chat-update","uid":"omp:sub9","archived":true}),
+    );
+    assert_eq!(
+        scoped_recents(&db, &home, Some(&sub)).first().map(String::as_str),
+        Some("omp:sub8")
+    );
+    assert!(!scoped_recents(&db, &home, None)
+        .iter()
+        .any(|uid| uid == "omp:sub9"));
+}
+
+#[test]
+fn scoped_recents_hide_ignored_sources_before_the_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let db = temp.path().join("index.sqlite");
+    let repo = home.join("repo");
+    let sub = repo.join("sub");
+    let other = home.join("other");
+    for folder in [&sub, &other, &repo.join(".git")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    for i in 0..20 {
+        seed(&home, &format!("sub{i}"), &sub, 200 + i);
+    }
+    for i in 0..3 {
+        seed(&home, &format!("root{i}"), &repo, 100 + i);
+        seed(&home, &format!("other{i}"), &other, 300 + i);
+    }
+    run(&db, &home, &["index"]);
+    assert_eq!(scoped_recents(&db, &home, Some(&sub)).len(), 15);
+    library(
+        &db,
+        &home,
+        json!({"op":"source-ignore","path":sub.to_str().unwrap()}),
+    );
+    // The 20 newest chats in the worktree are ignored, so the cap must count what is
+    // left instead of truncating first and then hiding every row.
+    let scoped = scoped_recents(&db, &home, Some(&sub));
+    assert_eq!(scoped, ["omp:root2", "omp:root1", "omp:root0"]);
+    let search = run(
+        &db,
+        &home,
+        &[
+            "query",
+            "--scope",
+            "workspace",
+            "--cwd",
+            sub.to_str().unwrap(),
+            "--limit",
+            "15",
+            "--q",
+            "",
+        ],
+    );
+    assert_eq!(search["total"], 3);
+    assert_eq!(scoped, uids(&search["sessions"]));
+    // The global list hides them too, and it also fills its cap after filtering.
+    let all = scoped_recents(&db, &home, None);
+    assert_eq!(all.len(), 6);
+    assert!(all.iter().all(|uid| !uid.starts_with("omp:sub")));
+    assert_eq!(all.first().map(String::as_str), Some("omp:other2"));
+}
