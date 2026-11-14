@@ -50,6 +50,7 @@ tern plugin reload                                   # Reload plugin in running 
 | `lib/ui.luau`, `lib/picker.luau`, `lib/project-editor.luau`, `lib/fmt.luau` | Shared widgets, selection sheets, project drafts/directory browser, formatting. |
 | `indexer/src/main.rs`, `indexer/src/model.rs`, `indexer/src/text.rs`, `indexer/src/git.rs` | CLI entry, data types, quoting/timestamps, Git/worktree resolution. |
 | `indexer/src/db.rs`, `indexer/src/library.rs`, `indexer/src/sessions.rs` | Disposable index, durable library, session projections/scopes/paging. |
+| `indexer/src/transcript.rs` | Read-only chat preview: parses OMP/Claude Code transcripts, condenses tool calls, fits Tern's update budget. |
 | `indexer/src/harnesses.rs`, `indexer/src/adapters/`, `indexer/src/delete*.rs` | Verified harness discovery/launch, session parsing, fail-closed source deletion. |
 | `indexer/tests/` | Real-binary integration tests. |
 | `scripts/build.sh`, `scripts/check-luau.py`, `.github/workflows/ci.yml` | Release build, Luau compilation, CI checks. |
@@ -103,3 +104,11 @@ For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) r
 - Open chat tabs through the host CLI, resolving the panel's exact window and session before creation and focus. Never fall back to the CLI's default target when the originating panel cannot be found.
 - Create fallback `launch:<nonce>` claims only after the CLI fails. Bind each claim to the exact pane, command, and directory; expire it after 10 seconds and consume it before tab creation. Link fallback still requires a live focused Projects panel on the local host.
 - Resolve Codex/Claude Resume commands at both launch boundaries: current persisted host ACP preferences for the CLI, and current window preferences for link fallback. Preserve backend/copy commands and `agents.auto_acp` / `agents.keep_tui` opt-outs.
+
+## Chat preview
+
+- The preview is read-only: the panel fetches the selected chat through the `transcript` library request and never launches an agent or adds a block. A selection moved by a reload or by search paging refetches it; a selection that is not a chat clears the drawer instead of leaving stale text. `Esc`, `Space` on the shown chat, or the close button closes it.
+- Keep one transcript request in flight per panel: while it runs, remember only the newest wanted chat and fetch it when the answer lands, and drop answers for a cleared or superseded drawer.
+- Open the transcript through the deletion-safe path check (`delete::safe_path`): a real file inside the harness's own history folder (`source` without its `agent:` prefix), with symlinked or escaping paths refused. Parse OMP and Claude Code only; other harnesses keep the backend's "not available" notice, and no preview affordance is offered for them.
+- Stream the file line by line and retain only bounded state, over one consistent snapshot: bound the second pass by the first pass's file length, retry both passes once when the file is rewritten, then report that the chat changed instead of mixing versions. OMP sessions are trees, so render only the branch that ends at the last chat message (bookkeeping records never pick it) and ignore rewound-away entries; files without parent links render in file order. Claude Code keeps the user's text beside tool output and shows human-queued prompts, but not task notifications or non-human origins.
+- Return at most the newest 128 KiB of markdown from at most 400 turns, plus how many messages were omitted, so one canvas update stays inside Tern's limits even for a single oversized record. Hide thinking and tool output; condense consecutive tool calls to one line with clipped names and a capped summary.

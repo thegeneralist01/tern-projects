@@ -62,6 +62,7 @@ If you use multiple AI coding agents, your sessions are scattered across hidden 
 - 🔍 **Instant Full-Text Search** — FTS5-powered search across all your past sessions. Filter by **Worktree**, **Repository**, or **All history** with live keyword highlighting.
 - 🚀 **Fresh Chat Launching** — Press `⌘N` (`Ctrl+N`) to launch a new chat in your preferred CLI (`omp`, `claude`, `codex`, `pi`, `opencode`, or `cursor`).
 - 📌 **Global Pins & Recents** — Keep critical threads pinned to the top of your sidebar. Recents keeps your 15 most recent chats one click away.
+- 👁️ **Read-only Chat Preview** — Select an OMP or Claude Code chat and choose **Preview** (or press `Space` in Projects) to read it in a drawer inside the panel without starting the agent: your messages on the right, the agent's on the left, tool calls condensed to one line, the newest part of long chats. The drawer follows your selection; `Esc`, `Space` or its close button closes it.
 - 🗄️ **Local Archiving & Safe Deletion** — Archive threads to hide them without losing data, or permanently delete sessions via verified native CLI calls.
 
 Changing a project's name or source folders does not discard its existing indexed chats. When source folders change, existing automatic memberships (including archived chats) are retained in the durable library; project lists and scoped search keep using them after an index rebuild. New chats still follow the configured folders, so reusing an old path does not attach unrelated new chats. Explicit **Move to project** and **No project** choices take precedence. Original transcripts and their recorded working directories are not rewritten.
@@ -85,6 +86,7 @@ Default controls are listed below. Tern’s preset and your overrides can change
 | **New chat** (in current project/folder) | `⌘ N` | `Ctrl + N` |
 | **New chat with…** (choose harness) | `⇧ ⌘ N` | `Shift + Ctrl + N` |
 | **Resume chat** | `Enter` | `Enter` |
+| **Preview chat** (OMP, Claude Code) | `Space` | `Space` |
 | **Fold / unfold project** | `←` / `→` | `←` / `→` |
 | **Context menu / Actions** | `Shift + F10` | `Shift + F10` |
 | **Copy resume command** | `⌃ Y` | `Ctrl + Y` |

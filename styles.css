@@ -24,6 +24,8 @@
 		overflow: hidden;
 		margin: 0 -6px 0 -2px;
 	}
+	/* The preview drawer covers the lower 60 %; the list scrolls in what stays visible above it. */
+	&.sf-main > .tp-preview-space { flex: 0 0 60%; }
 	&.sf-main > [data-role="tern-projects.rows"] > .sf-list-scroll {
 		height: 100%;
 		max-height: none !important;
@@ -387,6 +389,40 @@
 	[data-role="tern-projects.menu"] .sf-rule { margin: 3px 6px; min-height: 0; height: 1px; padding: 0; }
 	/* Harness pickers keep the harness tint on their glyphs. */
 	[data-role="tern-projects.picker"] .pk-row[data-tone] .pk-lead { color: var(--tc); }
+
+	/* Chat preview drawer: your turns right, the agent's left. */
+	[data-role="tern-projects.preview"] {
+		.tp-chat {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			padding: 12px 14px 24px;
+			font-family: var(--sans);
+			font-size: 13px;
+			color: var(--t1);
+		}
+		.tp-chat-meta { align-self: center; font-size: 11.5px; color: var(--t3); }
+		.tp-chat-msg {
+			max-width: 85%;
+			min-width: 0;
+			padding: 8px 12px;
+			border-radius: 12px;
+			overflow-wrap: anywhere;
+		}
+		.tp-chat-msg.user {
+			align-self: flex-end;
+			border-bottom-right-radius: 4px;
+			background: rgb(from var(--accent) r g b / 16%);
+		}
+		.tp-chat-msg.agent {
+			align-self: flex-start;
+			border-bottom-left-radius: 4px;
+			background: var(--card);
+			box-shadow: 0 0 0 1px var(--l2);
+		}
+		.tp-chat-who { margin-bottom: 4px; font-size: 11px; font-weight: 600; color: var(--t3); }
+		.tp-chat-msg.user .tp-chat-who { text-align: right; }
+	}
 
 	@media (prefers-reduced-motion: reduce) {
 		.tp-btn, .tp-seg-btn, .tp-ico { transition: none; }
