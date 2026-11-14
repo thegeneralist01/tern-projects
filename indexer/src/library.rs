@@ -70,6 +70,9 @@ pub enum Request {
         path: String,
     },
     SourceIgnores,
+    Workspaces {
+        request: crate::workspaces::Request,
+    },
 }
 
 // Option<Value> cannot distinguish an absent field from an explicit JSON null.

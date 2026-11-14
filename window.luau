@@ -7,6 +7,7 @@ end
 
 local fmt = require("./lib/fmt")
 local resume = require("./lib/resume")
+require("./lib/workspace-agents").start()
 local unpct = fmt.unpct
 local pct = fmt.pct
 

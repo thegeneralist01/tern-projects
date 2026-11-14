@@ -70,6 +70,18 @@ For chats already hidden by a folder change made before this fix, find them in *
 
 ![tern-projects details, menus, and search results](docs/screenshots/showcase-details.png)
 
+## Workspaces (optional)
+
+Install [OVNFS](https://github.com/stencil-hq/ovnfs) to add a **Workspaces** tab for disposable checkouts, grouped by your Projects folders. The tab is hidden when OVNFS is not installed; after installing it, press **Refresh** (`Ctrl+R`) without reopening the panel. Discovery checks `PATH`, `~/.local/bin`, and Windows `%LOCALAPPDATA%\Programs\ovnfs`.
+
+Create or fork workspaces, inspect source changes and unreturned commits, preview applying changes, save commits as a new branch, and remove checkouts. Unassigned workspaces offer **Add as project**. Git subfolder projects explicitly capture the whole repository. **New chat** uses your default harness or the same harness picker as Projects, starting in the checkout.
+
+OVNFS is never started automatically: a stopped daemon offers **Start**, and errors show their reason. Workspaces polls only while its view is visible; agent status comes from Tern's native agent model, not a specific harness. Applying or removing is blocked while agents are working or waiting for input; removal also requires closing live agent panes. Preview and removal confirmations are revalidated, and operations are never replayed after a plugin reload. Removal also deletes ignored, cached, and oversized files that are not counted as source changes.
+
+After one initial visibility check, the window agent bridge is queried only while Workspaces is visible. If window agent data is unavailable, the checkout list still loads after a short wait and shows an agent-status notice; apply and removal still require a fresh Tern agent check.
+
+The workspace UI has been verified on **Linux only**. macOS and Windows have not been tested interactively.
+
 ---
 
 ## Keyboard-First Controls

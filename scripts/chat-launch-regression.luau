@@ -23,6 +23,8 @@ local function fixture()
 		local environment = setmetatable({tern = fake, os = {time = function() return f.now end}, require = function(path)
 			if path == "./lib/resume" or path == "./resume" then return load("lib/resume") end
 			if path == "../lib/chat-launch" then return load("lib/chat-launch") end
+			if path == "../lib/workspaces" then return load("lib/workspaces") end
+			if path == "./lib/workspace-agents" then return load("lib/workspace-agents") end
 			if path == "../lib/updates" or path == "./updates" then return updates end
 			if path == "./lib/fmt" or path == "../lib/fmt" then return {pct = function(v) return v end, unpct = function(v) return v end} end
 			return {}
@@ -41,7 +43,7 @@ local function fixture()
 	}
 	local panel = load("blocks/panel")
 	load("window")
-	f.state = {cx = cx, alive = true, confirm = {kind = "launch", buttons = {}}, pending_plan = {cwd = "/project", command = "codex"}}
+	f.state = {cx = cx, alive = true, workspaces = {available = false}, confirm = {kind = "launch", buttons = {}}, pending_plan = {cwd = "/project", command = "codex"}}
 	f.start = function() panel.event(f.state, {ev = "action", act = "confirm", value = "launch-accept"}, cx) end
 	f.reply = function(status, value)
 		local request = table.remove(f.pending, 1)
