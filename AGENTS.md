@@ -23,6 +23,8 @@ cargo test --locked --manifest-path indexer/Cargo.toml # Backend unit and integr
 cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
 python3 scripts/check-luau.py                          # Requires luau-compile 0.745
 python3 scripts/test_chat_launch.py                    # Requires Luau CLI 0.745
+python3 scripts/test-workspaces.py                     # Optional tab, launch, dialogs and mutation guards
+python3 scripts/test-workspace-agents.py               # Lazy native Tern agent tracking
 actionlint                                           # Requires actionlint 1.7.12
 shellcheck scripts/*.sh                              # Requires ShellCheck 0.11.0
 tern plugin types .                                  # Regenerate tern.d.luau after Tern updates
@@ -42,10 +44,11 @@ tern plugin reload                                   # Reload plugin in running 
 | --- | --- |
 | `host.luau` | Host process: start update checks, register the panel, manage shared state. |
 | `window.luau` | Window process: shortcuts, native settings, toggles, `tern-projects://launch` and `tern-projects://resume` routes. |
-| `blocks/panel.luau`, `styles.css` | Projects, Search, and Settings UI. |
+| `blocks/panel.luau`, `styles.css` | Projects, optional Workspaces, Search, and Settings UI. |
 | `lib/backend.luau`, `lib/cli.luau` | Cargo builds, binary cache, request queue, CLI JSON, deletion/update coordination. |
 | `lib/updates.luau` | Host-only update checks, consent-gated installation, recovery. |
 | `lib/chat-launch.luau`, `lib/resume.luau` | Origin-targeted host tab launches and ACP resume command selection. |
+| `lib/workspaces.luau`, `lib/workspace-agents.luau`, `indexer/src/workspaces.rs` | Optional OVNFS view, lazy window agent bridge, guarded checkout operations. |
 | `lib/input.luau`, `lib/textfield.luau` | Shortcuts, UTF-16 native edits, UTF-8 text fields. |
 | `lib/ui.luau`, `lib/picker.luau`, `lib/project-editor.luau`, `lib/fmt.luau` | Shared widgets, selection sheets, project drafts/directory browser, formatting. |
 | `indexer/src/main.rs`, `indexer/src/model.rs`, `indexer/src/text.rs`, `indexer/src/git.rs` | CLI entry, data types, quoting/timestamps, Git/worktree resolution. |
@@ -53,6 +56,7 @@ tern plugin reload                                   # Reload plugin in running 
 | `indexer/src/harnesses.rs`, `indexer/src/adapters/`, `indexer/src/delete*.rs` | Verified harness discovery/launch, session parsing, fail-closed source deletion. |
 | `indexer/tests/` | Real-binary integration tests. |
 | `scripts/build.sh`, `scripts/check-luau.py`, `.github/workflows/ci.yml` | Release build, Luau compilation, CI checks. |
+| `scripts/test-workspaces.py`, `scripts/test-workspace-agents.py` | Optional-tab, workspace launch/safety, and lazy native-agent regressions. |
 | `scripts/pr_staleness.py`, `scripts/test_pr_staleness.py`, `.github/workflows/pr-staleness.yml` | Daily PR inactivity labels, persistent activity clock, transition tests. |
 | `plugin.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, `docs/` | Manifest, release notes, contributor workflow, technical guides and showcase assets. |
 | `bin/tern-projects`, `tern.d.luau` | Gitignored build output and generated Tern declarations. |
@@ -70,6 +74,15 @@ For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) r
 - Library schema v2 retains automatic memberships in `project_chats(project_id,uid)`. When saving changed source folders, capture matching indexed chats (including archived chats) under the library write lock before replacing folders. Explicit `project`/`none` assignments override retention; old paths must not remain live matching rules.
 - Retained membership survives index rebuilds, cascades on project removal, and is cleared for verified UIDs during permanent chat deletion. Upgrade schema v1 transactionally without overwriting projects, annotations, or settings.
 - Library schema v3 adds `ignored_sources(path,resolved)`; the normalized path is each rule's removal identity. Upgrade v1/v2 transactionally. Ignores match whole path components of cwd, repository root, and worktree root, and filter before counts/paging in every projection. Never turn ignores into archive/assignment changes or source deletion; project-save retention reads unfiltered sessions.
+
+## Workspace safety
+
+- Detect the OVNFS executable through `PATH` and official user-local installation directories, and invoke only that resolved path. Missing means no executable, not a stopped or broken daemon. Detection must not spawn OVNFS.
+- Cache availability and its resolved path/search environment in host KV, not pane `save()`. Hide missing installations from navigation, cycling and keyboard help; re-detect once on panel open and explicit Refresh, never on the chat-index timer. The window bridge registers only a route until Workspaces requests it; no initial timers, pane scans or agent subscriptions.
+- OVNFS owns checkout state; never persist a checkout list. Poll only the visible Workspaces view, probe `status` before `ls` (which otherwise auto-starts), inherit daemon environment, and use `diff --json` rather than `dirty` for source changes. Cache details by identity, touched and daemon pid; cap management requests at three.
+- Bootstrap visibility with one window snapshot request. Hidden views must not request agent snapshots or resolve agent paths; agent payloads must not redraw Projects/Search/Settings. After a bounded wait without a window response, allow listing with unknown agent status, never bypass mutation authorization. KV read failures mean unknown agent results, not recurring native-hook errors.
+- Canonicalize workspace and agent locations, resolving surviving ancestors for deleted agent cwds. Revalidate checkout identity, change tokens, Git history and fresh generic Tern agent snapshots before apply/removal; reject unsafe operations without replay. Use the OS operation lock across CLI requests and plugin reloads, recognizing platform-specific lock-contention errors.
+- Workspace New chat uses Projects' default-harness/picker flow with a checkout `cwd`, never a hardcoded harness. Git subfolder captures must explicitly show and validate the repository root.
 
 ## Backend builds
 

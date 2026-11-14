@@ -6,6 +6,7 @@ All notable changes to `tern-projects` will be documented in this file.
 
 ### Added
 - **Sidebar position memory**: closing Projects with its shortcut remembers which side of its neighbor it sat on (left, right, above or below), and the next panel opens on that side instead of always on the left. Only a panel that lands beside its neighbor is narrowed to the sidebar width. The Projects shortcut on a focused panel also closes it right after a plugin reload, instead of first only refocusing it; Search and Settings still switch it.
+- **Optional OVNFS Workspaces**: a hidden-when-uninstalled tab for creating and forking checkouts, native Tern agent status, source-change and commit inspection, guarded apply previews and removal, branch preservation, and adding unassigned workspaces as projects. New chat follows the normal default-harness/picker flow in the checkout. Discovery includes official installer locations; Refresh picks up installation or removal without reopening. Workspace UI verified on Linux only; macOS and Windows have not been tested interactively.
 
 ## [0.2.14] — 2026-11-13
 
