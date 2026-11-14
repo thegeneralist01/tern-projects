@@ -420,12 +420,12 @@ fn candidates(home: &Path, names: &[&str], user_dirs: bool) -> Vec<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn executable_names(name: &str) -> Vec<String> {
+pub(crate) fn executable_names(name: &str) -> Vec<String> {
     vec![name.to_owned()]
 }
 
 #[cfg(windows)]
-fn executable_names(name: &str) -> Vec<String> {
+pub(crate) fn executable_names(name: &str) -> Vec<String> {
     if Path::new(name).extension().is_some() {
         return vec![name.to_owned()];
     }
@@ -437,7 +437,7 @@ fn executable_names(name: &str) -> Vec<String> {
         .collect()
 }
 
-fn executable_file(path: &Path) -> bool {
+pub(crate) fn executable_file(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };

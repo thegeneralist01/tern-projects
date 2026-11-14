@@ -76,6 +76,7 @@ function cli.request(payload: any, cb: (data: any?, err: string?) -> (), should_
 		["launch-plan"] = 60000,
 		["delete-preview"] = 120000,
 		delete = 180000,
+		workspaces = 180000,
 	}
 	spawn({ "library" }, timeouts[payload.op] or 15000, encoded, function(data, err)
 		if payload.op == "delete" and err == "timed out" then

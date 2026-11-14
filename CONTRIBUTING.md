@@ -71,6 +71,7 @@ Whenever you modify Rust code in `indexer/`, run `./scripts/build.sh` (or `cargo
 - **Chat launches**: focused Luau regressions cover fallback authorization after a CLI timeout, expiry, and replay protection.
 - **Recents scope**: a focused Luau regression covers the **This folder** default, the snapshot payload, the empty and failed states, remembered scope across reopen, dropped stale responses, and keeping the Recents page.
 - **Terminal folder**: a focused Luau regression covers following the focused terminal per tab (`cd` and focus changes), other tabs and parked panels, the post-reload fallback, and Refresh's route.
+- **Optional Workspaces**: Luau regressions cover missing/installed transitions, navigation and restored state, standard harness launches, dialogs, mutation handoff guards, and lazy harness-independent Tern agent tracking. Rust covers executable discovery on all platforms; shell-based OVNFS integration fixtures run on Unix.
 - **Workflows and shell**: actionlint validates GitHub Actions, including embedded shell commands; ShellCheck checks `scripts/*.sh`.
 - **PR inactivity automation**: unit tests cover week boundaries, progression, and activity resets.
 - **PR checks**: a stable aggregate status that fails if any dependency fails, is cancelled, or is skipped. Configure this status as required in the repository's `main` branch ruleset to block merges.
@@ -86,6 +87,8 @@ python3 scripts/check-luau.py
 python3 scripts/test_chat_launch.py
 python3 scripts/test_recents.py
 python3 scripts/test_follow_cwd.py
+python3 scripts/test-workspaces.py
+python3 scripts/test-workspace-agents.py
 actionlint
 python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
 shellcheck scripts/*.sh
