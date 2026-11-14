@@ -5,6 +5,7 @@ All notable changes to `tern-projects` will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Sidebar position memory**: closing Projects with its shortcut remembers which side of its neighbor it sat on (left, right, above or below), and the next panel opens on that side instead of always on the left. Only a panel that lands beside its neighbor is narrowed to the sidebar width. The Projects shortcut on a focused panel also closes it right after a plugin reload, instead of first only refocusing it; Search and Settings still switch it.
 - **Read-only chat preview**: **Preview** (dock button, actions menu, or `Space` in Projects) opens the selected OMP or Claude Code chat in a drawer over the lower part of the panel, as a chat view (your messages right, the agent's left), without starting the agent or adding a block to the layout. Thinking and tool output stay hidden, consecutive tool calls condense to one line, prompts you queued while the agent worked appear as your messages, an OMP session that was rewound shows only its active branch, and long chats show their newest part. The drawer follows the selection and keeps the selected row visible above it; `Esc`, `Space` on the shown chat, or its close button closes it.
 
 ## [0.2.14] — 2026-11-13
