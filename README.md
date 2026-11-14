@@ -22,6 +22,8 @@ tern plugin install github.com/thegeneralist01/tern-projects
 
 *(Or open **Projects** from the Tern command palette).*
 
+Closing the panel with its shortcut remembers its side; it reopens on that side.
+
 Tern fetches the plugin, and the background engine builds automatically on first load. Rust/Cargo and your platform's native C build tools are required; no manual compile step is needed.
 
 Cargo discovery checks absolute entries in Tern's host `PATH` first, then `$CARGO_HOME/bin` (or `~/.cargo/bin`) and common Unix installation locations, including Homebrew. The build environment includes the resolved Cargo directory so `rustc` and sibling tools remain available even when the GUI host has a limited `PATH`.

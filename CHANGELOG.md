@@ -4,6 +4,9 @@ All notable changes to `tern-projects` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Sidebar position memory**: closing Projects with its shortcut remembers which side of its neighbor it sat on (left, right, above or below), and the next panel opens on that side instead of always on the left. Only a panel that lands beside its neighbor is narrowed to the sidebar width. The Projects shortcut on a focused panel also closes it right after a plugin reload, instead of first only refocusing it; Search and Settings still switch it.
+
 ## [0.2.14] — 2026-11-13
 
 ### Fixed

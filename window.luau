@@ -12,6 +12,8 @@ local pct = fmt.pct
 
 local KIND = "tern-projects.panel"
 local WIDTH = 44
+-- The side of its neighbor the last panel closed by its shortcut occupied; a new panel opens there.
+local SIDE_KEY = "panel-side:v1"
 
 local LAUNCH_CLAIM_LIFETIME = 10 -- seconds; must match the panel's one-shot claim lifetime
 -- Per-pane state for toggle tracking.
@@ -25,6 +27,26 @@ local function find_pane(cx: SessionContext, id: number?): PaneInfo?
 		if p.pane == id then return p end
 	end
 	return nil
+end
+
+-- Which side of its split sibling `pane` sits on; nil when it is the tab's only tiled pane.
+local function panel_side(cx: SessionContext, tab: number, pane: number): string?
+	local layout = cx.session:layout(tab)
+	local function find(node: any, split: string?, index: number): string?
+		if node.pane == pane then
+			if split == "right" then return if index == 1 then "left" else "right" end
+			if split == "down" then return if index == 1 then "up" else "down" end
+			return nil
+		end
+		for i = 1, 2 do
+			if node[i] then
+				local side = find(node[i], node.split, i)
+				if side then return side end
+			end
+		end
+		return nil
+	end
+	return if layout then find(layout.root, nil, 0) else nil
 end
 
 -- Toggle or open the projects panel in `mode` for the current tab.
@@ -46,8 +68,12 @@ local function toggle(cx: SessionContext, mode: string)
 	end
 
 	if panel ~= nil then
-		if f == panel and last_mode[panel] == mode then
-			-- Same key again while panel is focused: close it.
+		-- After a plugin reload the mode is unknown; the Projects shortcut on a focused panel still closes it,
+		-- while Search and Settings still switch it.
+		if f == panel and (last_mode[panel] or "projects") == mode then
+			-- Same key again while panel is focused: close it, remembering where it was.
+			local side = panel_side(cx, tab, panel)
+			if side then pcall(tern.kv.set, SIDE_KEY, side) end
 			cx.layout:close(panel)
 			local pf = prev_focus[panel]
 			if pf ~= nil then
@@ -80,7 +106,9 @@ local function toggle(cx: SessionContext, mode: string)
 	-- Create a new panel.
 	pcall(tern.fs.remove, tern.plugin.data .. "/panel-cols")
 	local new_cwd = fi ~= nil and (fi.cwd or "") or ""
-	local new_pane = cx.layout:split(f :: number, "left", { block = KIND, args = { mode, new_cwd } })
+	local ok_side, saved_side = pcall(tern.kv.get, SIDE_KEY)
+	local side: string = if ok_side and (saved_side == "right" or saved_side == "up" or saved_side == "down") then saved_side else "left"
+	local new_pane = cx.layout:split(f :: number, side :: any, { block = KIND, args = { mode, new_cwd } })
 	if new_pane == nil then
 		-- Tern 0.9.5 cannot resolve some live pane ids passed back to split; open beside the focused pane instead.
 		new_pane = cx:new_block(KIND, { mode, new_cwd }, "split")
@@ -99,8 +127,11 @@ local function toggle(cx: SessionContext, mode: string)
 			return
 		end
 		local c = tonumber(data)
-		if c ~= nil and c > WIDTH + 2 then
-			cx2.layout:resize(new_pane :: number, "right", -(c - WIDTH))
+		-- Only a side panel is narrowed, from the edge that faces its neighbor. Read where it actually
+		-- landed: the fallback above cannot choose a side.
+		local placed = panel_side(cx2, tab :: number, new_pane :: number)
+		if c ~= nil and c > WIDTH + 2 and (placed == "left" or placed == "right") then
+			cx2.layout:resize(new_pane :: number, if placed == "left" then "right" else "left", -(c - WIDTH))
 		end
 	end)
 end
