@@ -70,6 +70,7 @@ Whenever you modify Rust code in `indexer/`, run `./scripts/build.sh` (or `cargo
 - **Luau**: compile runtime sources at the repository root and under `blocks/` and `lib/`, and require `--!strict` on the first line. Generated `*.d.luau` declarations are excluded. This checks syntax, not Tern SDK types or native UI behavior.
 - **Chat launches**: focused Luau regressions cover fallback authorization after a CLI timeout, expiry, and replay protection.
 - **Recents scope**: a focused Luau regression covers the **This folder** default, the snapshot payload, the empty and failed states, remembered scope across reopen, dropped stale responses, and keeping the Recents page.
+- **Terminal folder**: a focused Luau regression covers following the focused terminal per tab (`cd` and focus changes), other tabs and parked panels, the post-reload fallback, and Refresh's route.
 - **Workflows and shell**: actionlint validates GitHub Actions, including embedded shell commands; ShellCheck checks `scripts/*.sh`.
 - **PR inactivity automation**: unit tests cover week boundaries, progression, and activity resets.
 - **PR checks**: a stable aggregate status that fails if any dependency fails, is cancelled, or is skipped. Configure this status as required in the repository's `main` branch ruleset to block merges.
@@ -84,6 +85,7 @@ cargo test --locked --manifest-path indexer/Cargo.toml
 python3 scripts/check-luau.py
 python3 scripts/test_chat_launch.py
 python3 scripts/test_recents.py
+python3 scripts/test_follow_cwd.py
 actionlint
 python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
 shellcheck scripts/*.sh

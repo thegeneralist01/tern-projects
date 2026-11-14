@@ -345,6 +345,8 @@ reload = function(s: any)
 	end
 end
 local function refresh(s: any)
+	-- The window answers with the followed shell's folder (see lib/follow-cwd).
+	s.cx:open("tern-projects://follow?")
 	reload(s)
 	if s.indexing or not live(s) then return end
 	s.indexing = true
@@ -353,6 +355,19 @@ local function refresh(s: any)
 		s.indexing = false
 		if err then s.error = err; s.error_reload = false; s.cx:render() else s.indexed_at = os.time(); reload(s) end
 	end)
+end
+-- Open dialogs, menus and the Recents page stay; only lists scoped to the folder reload.
+local function follow_cwd(s: any, cwd: any): boolean
+	if type(cwd) ~= "string" or cwd == "" or cwd == s.ctx_cwd then return false end
+	s.ctx_cwd = cwd
+	if s.mode == "projects" and s.recent_filter == "folder" then
+		-- The old folder's chats leave the list: drop their selection (which would move the page to a
+		-- neighbor) and their row menu (whose actions would find no row).
+		if s.sel and string.sub(s.sel, 1, 7) == "recent:" then s.sel = nil end
+		if s.menu and s.menu.target and string.sub(s.menu.target, 1, 7) == "recent:" then s.menu = nil end
+		reload(s)
+	elseif s.mode == "search" and s.scope ~= "all" and not s.search_cwd then s.offset = 0; s.page = 0; reload(s) end
+	return true
 end
 local function open_chat_tab(s: any, cwd: string, command: string, resuming: boolean, fallback: () -> ())
 	if cwd == "" or command == "" or string.find(cwd, "[%z\r\n]") or string.find(command, "[%z\r\n]") then
@@ -2038,6 +2053,10 @@ local panel: BlockDef<any> = {
 	end,
 	event = function(s, ev, cx)
 		local id, name = ev.id or "", ev.ev
+		if name == "action" and ev.act == "follow-cwd" then
+			if follow_cwd(s, ev.value) then cx:render() end
+			return
+		end
 		if name == "action" and ev.act == "shortcut-state" then
 			if s.mode ~= "settings" or s.shortcut_payload == ev.value then return end
 			local ok, data = pcall(tern.json.decode, ev.value or "")

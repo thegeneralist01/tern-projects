@@ -9,6 +9,8 @@ local fmt = require("./lib/fmt")
 local resume = require("./lib/resume")
 local unpct = fmt.unpct
 local pct = fmt.pct
+local follow = require("./lib/follow-cwd")
+follow.start()
 
 local KIND = "tern-projects.panel"
 local WIDTH = 44
@@ -73,6 +75,7 @@ local function toggle(cx: SessionContext, mode: string)
 		last_mode[panel] = mode
 		if f ~= panel then
 			prev_focus[panel] = f :: number
+			follow.track(fi)
 		end
 		return
 	end
@@ -91,6 +94,7 @@ local function toggle(cx: SessionContext, mode: string)
 	end
 	last_mode[new_pane] = mode
 	prev_focus[new_pane] = f :: number
+	follow.track(fi)
 
 	-- After the block reports its width, resize the split.
 	tern.timer(400, function(cx2: SessionContext)

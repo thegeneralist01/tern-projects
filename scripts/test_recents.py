@@ -74,7 +74,9 @@ local function flush()
         settle()
     end
 end
-local cx = {pane = 1, render = function() end, frame = function() end, toast = function() end, open = function() end, copy = function() end}
+local opened, runs = {}, {}
+modules.cli.run = function(args, _, cb) table.insert(runs, args); if cb then cb({}) end end
+local cx = {pane = 1, render = function() end, frame = function() end, toast = function() end, open = function(_, url) table.insert(opened, url) end, copy = function() end}
 local function action(s, act, value)
     panel.event(s, {ev = "action", act = act, value = value}, cx)
 end
@@ -187,6 +189,50 @@ action(retargeted, "recent", if retargeted.recent_filter == "folder" then "all" 
 check(retargeted.page == recents_page, "changing scope keeps the Recents page visible")
 flush()
 check(retargeted.page == recents_page, "the Recents page stays visible after the snapshot lands")
+-- The followed terminal's folder retargets the panel in place.
+local function follow(s, path) panel.event(s, {ev = "action", id = "main", act = "follow-cwd", value = path}, cx) end
+if retargeted.recent_filter ~= "folder" then action(retargeted, "recent", "folder"); flush() end
+scoped_recent = {{uid = "cd-1", title = "After cd"}}
+retargeted.page = recents_page
+retargeted.menu = {ids = {"refresh"}, selected = "refresh"}
+retargeted.editor = modules["project-editor"].new({name = "", folders = {}})
+follow(retargeted, "/tmp/recents/cd")
+check(retargeted.ctx_cwd == "/tmp/recents/cd", "the followed terminal's folder retargets the panel")
+check(retargeted.menu ~= nil and retargeted.mode == "projects", "following a folder keeps the open menu and the mode")
+check(retargeted.editor ~= nil, "following a folder leaves an open dialog alone")
+retargeted.editor = nil
+flush()
+check(last_snapshot().recent_cwd == "/tmp/recents/cd", "This folder follows the terminal's folder")
+check(uids(retargeted.recent) == "cd-1", "the followed folder's chats replace the old ones")
+check(retargeted.page == recents_page, "following a folder keeps the Recents page")
+local count = #calls
+follow(retargeted, "/tmp/recents/cd")
+follow(retargeted, "")
+check(#calls == count and retargeted.ctx_cwd == "/tmp/recents/cd", "the same or an unknown folder changes nothing")
+-- A selected chat from the old folder and its row menu leave with it; the page stays.
+check(retargeted.rows["recent:cd-1"] ~= nil, "the fixture shows the followed folder's chat")
+retargeted.sel = "recent:cd-1"
+retargeted.menu = {target = "recent:cd-1", ids = {"resume"}, selected = "resume"}
+scoped_recent = {{uid = "cd-2", title = "Next folder"}}
+follow(retargeted, "/tmp/recents/cd2")
+check(retargeted.menu == nil and retargeted.sel == nil, "the old folder's selected chat and its row menu are dropped")
+flush()
+check(retargeted.page == recents_page and uids(retargeted.recent) == "cd-2", "a selected chat from the old folder does not move the page")
+action(retargeted, "recent", "all"); flush()
+count = #calls
+follow(retargeted, "/tmp/recents/elsewhere")
+check(retargeted.ctx_cwd == "/tmp/recents/elsewhere" and #calls == count, "with All the folder only relabels the panel")
+check(panel.save(retargeted).ctx_cwd == "/tmp/recents/elsewhere", "a followed folder survives reload")
+-- Search's folder scopes follow too, from their first page.
+action(retargeted, "open=search:"); flush()
+action(retargeted, "scope", "workspace"); flush()
+retargeted.offset = 40
+follow(retargeted, "/tmp/recents/search"); flush()
+check(retargeted.offset == 0 and runs[#runs][5] == "/tmp/recents/search", "Worktree search follows the terminal's folder")
+-- Refresh asks the window for the followed folder again.
+table.clear(opened)
+action(retargeted, "refresh"); flush()
+check(table.find(opened, "tern-projects://follow?") ~= nil, "Refresh asks the window for the followed folder")
 print("Recents scope: " .. tostring(assertions) .. " assertions passed (no model or network)")
 '''
     names = ("textfield", "fmt", "input", "ui", "project-editor", "picker", "resume", "chat-launch", "panel")
