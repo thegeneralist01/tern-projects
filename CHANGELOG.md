@@ -4,10 +4,13 @@ All notable changes to `tern-projects` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.15] — 2026-11-14
+
 ### Added
 - **Sidebar position memory**: closing Projects with its shortcut remembers which side of its neighbor it sat on (left, right, above or below), and the next panel opens on that side instead of always on the left. Only a panel that lands beside its neighbor is narrowed to the sidebar width. The Projects shortcut on a focused panel also closes it right after a plugin reload, instead of first only refocusing it; Search and Settings still switch it.
 - **Recents folder scope**: a **This folder** / **All** toggle beside Projects' Recents header narrows the 15 most recent chats to those started in the panel's folder, using the same matching as Search's Worktree scope (so a repository's subfolders count as one folder). **This folder** is the default; **All** shows the previous global list. Ignored source folders stay hidden from both scopes. The choice is remembered across panel reopen and plugin reload, a panel retargeted to another folder keeps that folder across reload until the tab's terminal is followed again (see below), an empty folder shows its own empty state, a scope switch never shows the previous scope's chats, and the same scopes are reachable from Panel options (`Shift + F10`). Search is unchanged.
 - **Panel folder follows the terminal**: the folder behind **New chat**, Recents' **This folder** and Search's **Worktree** / **Repository** scopes (unless Search is pinned to a discovered folder) now follows the terminal or agent last focused in the panel's tab, as Tern's Files pane does. A `cd` there or a click on another terminal updates it in place without closing open dialogs or leaving the Recents page (a row menu for a chat from the old folder closes with its row); **Refresh** re-reads it. After a plugin reload, until you click a terminal, the panel follows the tab's focused or only terminal. Previously the panel kept the folder it was opened with until reopened.
+- Thanks to [@chrisro320](https://github.com/chrisro320) for [PR #10](https://github.com/thegeneralist01/tern-projects/pull/10) and [PR #12](https://github.com/thegeneralist01/tern-projects/pull/12).
 
 ## [0.2.14] — 2026-11-13
 
