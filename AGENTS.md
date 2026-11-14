@@ -23,6 +23,7 @@ cargo test --locked --manifest-path indexer/Cargo.toml # Backend unit and integr
 cargo clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D clippy::correctness -D clippy::suspicious
 python3 scripts/check-luau.py                          # Requires luau-compile 0.745
 python3 scripts/test_chat_launch.py                    # Requires Luau CLI 0.745
+python3 scripts/test_recents.py                        # Requires Luau CLI 0.745; Recents scope, no model
 actionlint                                           # Requires actionlint 1.7.12
 shellcheck scripts/*.sh                              # Requires ShellCheck 0.11.0
 tern plugin types .                                  # Regenerate tern.d.luau after Tern updates

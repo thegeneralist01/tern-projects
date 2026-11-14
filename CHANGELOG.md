@@ -4,6 +4,9 @@ All notable changes to `tern-projects` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Recents folder scope**: a **This folder** / **All** toggle beside Projects' Recents header narrows the 15 most recent chats to those started in the panel's folder, using the same matching as Search's Worktree scope (so a repository's subfolders count as one folder). **This folder** is the default; **All** shows the previous global list. Ignored source folders stay hidden from both scopes. The choice is remembered across panel reopen and plugin reload, a panel retargeted to another folder keeps that folder across reload, an empty folder shows its own empty state, a scope switch never shows the previous scope's chats, and the same scopes are reachable from Panel options (`Shift + F10`). Search is unchanged.
+
 ## [0.2.14] — 2026-11-13
 
 ### Fixed

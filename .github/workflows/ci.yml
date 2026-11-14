@@ -72,6 +72,8 @@ jobs:
         run: python3 scripts/check-luau.py
       - name: Check chat launch authorization
         run: python3 scripts/test_chat_launch.py
+      - name: Check Recents folder scope
+        run: python3 scripts/test_recents.py
       - name: Check PR inactivity transitions
         run: python3 -B -m unittest discover -s scripts -p 'test_pr_staleness.py'
       - name: Validate GitHub Actions workflows
