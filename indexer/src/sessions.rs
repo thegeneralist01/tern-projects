@@ -125,6 +125,17 @@ pub struct Query<'a> {
     pub offset: i64,
     pub project_id: Option<&'a str>,
 }
+/// The session column and root a scoped list matches: `workspace` is Search's Worktree
+/// scope, `repository` its Repository scope. An empty cwd means home.
+fn scope_root(scope: &str, cwd: &str, home: &str) -> (&'static str, String) {
+    let effective = if cwd.is_empty() { home } else { cwd };
+    let info = git::resolve(effective, &mut std::collections::HashMap::new());
+    if scope == "workspace" {
+        ("s.worktree_root", info.worktree_root)
+    } else {
+        ("s.project_root", info.project_root)
+    }
+}
 pub fn query(db_path: &Path, home: &str, q: Query<'_>) -> Result<Value> {
     page(q.limit, q.offset)?;
     anyhow::ensure!(
@@ -156,13 +167,7 @@ pub fn query(db_path: &Path, home: &str, q: Query<'_>) -> Result<Value> {
         values.push(fts.clone().into());
     }
     if q.scope != "all" {
-        let effective = if q.cwd.is_empty() { home } else { q.cwd };
-        let info = git::resolve(effective, &mut std::collections::HashMap::new());
-        let (column, root) = if q.scope == "workspace" {
-            ("s.worktree_root", info.worktree_root)
-        } else {
-            ("s.project_root", info.project_root)
-        };
+        let (column, root) = scope_root(q.scope, q.cwd, home);
         conditions.push(format!("{column}=?"));
         values.push(root.into());
     }
@@ -210,8 +215,15 @@ fn visible(conn: &Connection, home: &str) -> Result<Vec<SessionJson>> {
         home,
     )
 }
-pub fn snapshot(db_path: &Path, home: &str, view: &str, per: i64, recent: i64) -> Result<Value> {
-    projection(db_path, home, view, per, recent, None)
+pub fn snapshot(
+    db_path: &Path,
+    home: &str,
+    view: &str,
+    per: i64,
+    recent: i64,
+    recent_cwd: Option<&str>,
+) -> Result<Value> {
+    projection(db_path, home, view, per, recent, None, recent_cwd)
 }
 /// `keep` names a curated project to return even when ignores hide its card.
 fn projection(
@@ -221,6 +233,7 @@ fn projection(
     per: i64,
     recent: i64,
     keep: Option<&str>,
+    recent_cwd: Option<&str>,
 ) -> Result<Value> {
     anyhow::ensure!(
         ["mine", "discovered"].contains(&view),
@@ -232,7 +245,14 @@ fn projection(
     );
     let (conn, lib) = open(db_path)?;
     let sessions = visible(&conn, home)?;
-    let recents: Vec<_> = sessions.iter().take(recent as usize).collect();
+    // `recent_cwd` keeps only chats started where Search's Worktree scope would find them.
+    // Ignored sources are already absent from `sessions`, so they stay hidden here too.
+    let recent_root = recent_cwd.map(|cwd| scope_root("workspace", cwd, home).1);
+    let recents: Vec<_> = sessions
+        .iter()
+        .filter(|s| recent_root.as_deref().is_none_or(|root| s.worktree_root == root))
+        .take(recent as usize)
+        .collect();
     let pinned = rows(
         &conn,
         &format!(
@@ -311,7 +331,7 @@ pub fn archived(db_path: &Path, home: &str, limit: i64, offset: i64) -> Result<V
     Ok(json!({"sessions":sessions,"total":total,"offset":offset}))
 }
 pub fn saved_project(db_path: &Path, home: &str, project_id: &str) -> Result<Value> {
-    let snapshot = projection(db_path, home, "mine", 25, 15, Some(project_id))?;
+    let snapshot = projection(db_path, home, "mine", 25, 15, Some(project_id), None)?;
     snapshot["projects"]
         .as_array()
         .and_then(|projects| projects.iter().find(|p| p["id"] == project_id))

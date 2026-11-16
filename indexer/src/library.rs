@@ -14,6 +14,9 @@ pub enum Request {
         view: String,
         per: i64,
         recent: i64,
+        /// Scopes `recent` like Search's Worktree scope; absent keeps the global list.
+        #[serde(default)]
+        recent_cwd: Option<String>,
     },
     ProjectSave {
         id: Option<String>,

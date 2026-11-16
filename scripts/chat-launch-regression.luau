@@ -25,6 +25,8 @@ local function fixture()
 			if path == "../lib/chat-launch" then return load("lib/chat-launch") end
 			if path == "../lib/updates" or path == "./updates" then return updates end
 			if path == "./lib/fmt" or path == "../lib/fmt" then return {pct = function(v) return v end, unpct = function(v) return v end} end
+			-- The followed terminal folder stays inert here; scripts/test_follow_cwd.py covers it.
+			if path == "./lib/follow-cwd" then return {start = function() end, track = function() end} end
 			return {}
 		end}, {__index = getfenv()})
 		setfenv(chunk, environment)
