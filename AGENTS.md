@@ -105,7 +105,7 @@ For a new harness, follow [docs/adding-a-harness.md](docs/adding-a-harness.md) r
 
 ## Deletion safety
 
-- Fail closed: verify source identity and idle store conditions before removing files or records. Never delete project files, repositories, or worktrees.
+- Fail closed: verify source identity and idle store conditions before removing files or records. Never delete project files, repositories, or worktrees. Sole exception: after the user explicitly confirms in the Workspaces dialog, remove an OVNFS checkout (`ovnfs rm`) or apply its changes to the source folder (`ovnfs apply`), only after the revalidation in [Workspace safety](#workspace-safety).
 - Use verified native CLI deletion commands for Codex/OpenCode. For OMP, Claude, Pi, and Cursor, remove only verified owned session files/artifacts; refuse if the process is running or store ownership cannot be proven.
 - OMP cleanup accepts only verified table/FTS schemas and bounded indexing triggers. Delete exact binary-matched session IDs and verified owned dependents; preserve unattributed history. Refuse unknown triggers, foreign-key dependencies, or ambiguous indexed/unindexed dependent identities.
 - Revalidate OMP confirmation after acquiring the history write lock with a 5000ms busy timeout. SQL deletion and FTS repair must succeed before transcript removal. Filesystem removal and SQLite commit are not crash-atomic: report partial failures without automatic retry.
