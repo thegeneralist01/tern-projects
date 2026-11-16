@@ -6,8 +6,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,14 +64,17 @@ fn command(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Command {
     command.args(args);
     // OVNFS also spawns Git. Never let the launching shell select another repository,
     // index, object store or ref namespace, including through command-scoped config.
+    // Tracing is also removed: Git then writes progress to stderr, which this module
+    // treats as failure.
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
-        if name.starts_with("GIT_CONFIG") || matches!(name.as_ref(),
-            "GIT_DIR" | "GIT_WORK_TREE" | "GIT_INDEX_FILE" | "GIT_OBJECT_DIRECTORY"
-            | "GIT_ALTERNATE_OBJECT_DIRECTORIES" | "GIT_COMMON_DIR" | "GIT_NAMESPACE"
-            | "GIT_SHALLOW_FILE" | "GIT_REPLACE_REF_BASE" | "GIT_NO_REPLACE_OBJECTS"
-            | "GIT_CEILING_DIRECTORIES" | "GIT_DISCOVERY_ACROSS_FILESYSTEM" | "GIT_PREFIX"
-            | "GIT_IMPLICIT_WORK_TREE" | "GIT_GRAFT_FILE" | "GIT_INTERNAL_SUPER_PREFIX" | "GIT_QUARANTINE_PATH") {
+        if name.starts_with("GIT_CONFIG") || name.starts_with("GIT_TRACE") || name == "GIT_CURL_VERBOSE"
+            || matches!(name.as_ref(),
+                "GIT_DIR" | "GIT_WORK_TREE" | "GIT_INDEX_FILE" | "GIT_OBJECT_DIRECTORY"
+                | "GIT_ALTERNATE_OBJECT_DIRECTORIES" | "GIT_COMMON_DIR" | "GIT_NAMESPACE"
+                | "GIT_SHALLOW_FILE" | "GIT_REPLACE_REF_BASE" | "GIT_NO_REPLACE_OBJECTS"
+                | "GIT_CEILING_DIRECTORIES" | "GIT_DISCOVERY_ACROSS_FILESYSTEM" | "GIT_PREFIX"
+                | "GIT_IMPLICIT_WORK_TREE" | "GIT_GRAFT_FILE" | "GIT_INTERNAL_SUPER_PREFIX" | "GIT_QUARANTINE_PATH") {
             command.env_remove(key);
         }
     }
@@ -89,11 +93,28 @@ fn output(out: Output, conflicts: bool) -> Result<Value> {
 }
 fn ovnfs(executable: &Path, args: &[&str], conflicts: bool) -> Result<Value> { output(run(executable, args)?, conflicts) }
 fn git_output(path: &str, args: &[&str]) -> Result<Output> {
-    command("git", &["-C", path]).args(args).output().context("cannot run git")
+    command("git", &["--no-replace-objects", "-C", path]).args(args).output().context("cannot run git")
 }
 fn git(path: &str, args: &[&str]) -> Result<String> {
     let out = git_output(path, args)?;
-    ensure!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr).trim());
+    ensure!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(String::from_utf8(out.stdout)?.trim().to_owned())
+}
+fn git_stdin(path: &str, args: &[&str], input: &str) -> Result<String> {
+    let mut child = command("git", &["--no-replace-objects", "-C", path]).args(args)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().context("cannot run git")?;
+    let mut stdin = child.stdin.take().context("Git input unavailable")?;
+    // Drain output while writing so repositories with many refs cannot fill both pipes.
+    let (written, out) = std::thread::scope(|scope| -> Result<(std::io::Result<()>, Output)> {
+        let writer = scope.spawn(move || stdin.write_all(input.as_bytes()));
+        let out = child.wait_with_output()?;
+        Ok((writer.join().map_err(|_| anyhow::anyhow!("Git input writer panicked"))?, out))
+    })?;
+    // A broken pipe only means Git stopped reading input; its stderr and exit status
+    // explain why, so report those first.
+    ensure!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr).trim());
+    written.context("cannot send input to git")?;
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 fn real_path(path: &str) -> Result<String> {
@@ -211,35 +232,69 @@ fn head(path: &str) -> Result<Option<String>> {
     ensure!(reference.status.code() == Some(1), "Git HEAD exists but its commit cannot be read");
     Ok(None)
 }
+fn source_exclusions(source: &str, path: &str) -> Result<Vec<String>> {
+    // Validate the source graph too, including refs that will not be exclusions.
+    git(source, &["rev-list", "--count", "--all"])?;
+    let tips = git(source, &["rev-list", "--no-walk", "--all"])?;
+    if tips.is_empty() { return Ok(Vec::new()); }
+    let available = git_stdin(path, &["cat-file", "--batch-check=%(objectname) %(objecttype)"], &format!("{tips}\n"))
+        .context("Cannot inspect source commits in workspace")?;
+    let mut rows = available.lines();
+    let mut exclusions = Vec::new();
+    for tip in tips.lines() {
+        let (object, kind) = rows.next().and_then(|row| row.split_once(' ')).context("Invalid Git object response")?;
+        ensure!(object == tip, "Git object response does not match source tip");
+        match kind {
+            "commit" => exclusions.push(object.to_owned()),
+            // Source refs may have advanced since capture. Missing tips only over-count.
+            "missing" => {},
+            _ => bail!("Source tip is not a readable commit in the workspace"),
+        }
+    }
+    ensure!(rows.next().is_none(), "Unexpected Git object response");
+    Ok(exclusions)
+}
+// Exclusion tips travel on stdin: Windows caps a command line at 32,767 characters, so
+// repositories with many tags or branches would otherwise fail every Git call here.
+fn excluded_input(exclusions: &[String], head: Option<&str>) -> String {
+    let mut input = String::with_capacity((exclusions.len() + usize::from(head.is_some())) * 42);
+    for tip in exclusions.iter().map(String::as_str).chain(head) {
+        input.push('^'); input.push_str(tip); input.push('\n');
+    }
+    input
+}
+fn unreturned(path: &str, exclusions: &[String]) -> Result<u64> {
+    // The plain walk validates the whole checkout graph. With exclusions the walk still
+    // reads every unreturned ref and object, which is all the count needs.
+    if exclusions.is_empty() { return Ok(git(path, &["rev-list", "--count", "--all"])?.parse()?); }
+    Ok(git_stdin(path, &["rev-list", "--count", "--all", "--stdin"], &excluded_input(exclusions, None))?.parse()?)
+}
 fn commits(c: &Value) -> Result<Value> {
     if c["git"] != true { return Ok(Value::Null); }
     let source = c["source"].as_str().context("source missing")?;
     let path = c["path"].as_str().context("workspace path missing")?;
     let tip = head(source)?;
     let head = head(path)?;
-    let (count, titles) = if head.is_some() {
-        let range = tip.as_ref().map_or_else(|| "HEAD".to_owned(), |tip| format!("{tip}..HEAD"));
-        let count: u64 = git(path, &["rev-list", "--count", &range])?.parse()?;
-        let log = git(path, &["log", "-25", "--format=%h %s", &range])?;
-        (count, log.lines().map(str::to_owned).collect::<Vec<_>>())
-    } else {
-        // An orphan HEAD can coexist with commits on other refs. Only a genuinely
-        // empty ref graph is empty; unreadable refs/objects must block removal.
-        let total: u64 = git(path, &["rev-list", "--count", "--all"])?.parse()?;
-        if total == 0 { (0, Vec::new()) } else {
-            let mut args = Vec::with_capacity(6);
-            args.extend(["rev-list", "--count", "--all"]);
-            if let Some(tip) = tip.as_deref() { args.extend(["--not", tip]); }
-            let count: u64 = if tip.is_none() { total } else { git(path, &args)?.parse()? };
-            args[0] = "log"; args[1] = "--format=%h %s"; args.insert(2, "-25");
-            let log = git(path, &args)?;
-            (count, log.lines().map(str::to_owned).collect::<Vec<_>>())
-        }
-    };
+    // Include HEAD and every refs/ namespace, not just branches/tags: remote-tracking,
+    // stash and other retained refs can also own commits that removal would destroy.
+    let exclusions = source_exclusions(source, path)?;
+    let count = unreturned(path, &exclusions)?;
+    let titles = if count > 0 {
+        git_stdin(path, &["log", "-25", "--format=%h %s", "--all", "--stdin"], &excluded_input(&exclusions, None))?
+            .lines().map(str::to_owned).collect::<Vec<_>>()
+    } else { Vec::new() };
     let refs = if head.is_none() && count > 0 {
         git(path, &["for-each-ref", "--format=%(refname)"])?.lines().map(str::to_owned).collect::<Vec<_>>()
     } else { Vec::new() };
     Ok(json!({"count":count, "tip":tip, "head":head, "titles":titles, "refs":refs}))
+}
+// Saving HEAD as one branch preserves only its ancestry, so this extra history walk runs
+// when removal is authorized, not on the panel's periodic details request.
+fn off_head_commits(c: &Value, head: Option<&str>) -> Result<u64> {
+    let source = c["source"].as_str().context("source missing")?;
+    let path = c["path"].as_str().context("workspace path missing")?;
+    let exclusions = source_exclusions(source, path)?;
+    Ok(git_stdin(path, &["rev-list", "--count", "--all", "--stdin"], &excluded_input(&exclusions, head))?.parse()?)
 }
 fn details(executable: &Path, c: &Value) -> Result<Value> {
     let diff = ovnfs(executable, &["diff", c["name"].as_str().unwrap(), "--json"], false)?;
@@ -253,6 +308,7 @@ fn details(executable: &Path, c: &Value) -> Result<Value> {
 fn preview(executable: &Path, c: &Value) -> Result<Value> {
     let mut result = ovnfs(executable, &["apply", c["name"].as_str().unwrap(), "--dry-run", "--json"], true)?;
     let info = details(executable, c)?;
+    if !info["error"].is_null() { result["error"] = info["error"].clone(); }
     result["token"] = json!(hash(&json!([info["token"], result])));
     result["details"] = info;
     Ok(result)
@@ -301,10 +357,16 @@ fn authorize(executable: &Path, req: &Request) -> Result<Value> {
     c["agent_locations"] = Value::Object(locations);
     Ok(c)
 }
-fn removal_details(executable: &Path, req: &Request, c: &Value) -> Result<Value> {
-    let info = details(executable, c)?;
+fn removal_details(executable: &Path, req: &Request, c: &Value, saving: bool) -> Result<Value> {
+    let mut info = details(executable, c)?;
     ensure!(req.expected.as_deref() == info["token"].as_str(), "Workspace changed; cancel and review removal again");
     ensure!(info["error"].is_null(), "Cannot safely check unreturned commits; fix the Git error first");
+    // Only saving HEAD as a branch can destroy the other commits, so this walk is bound to
+    // the reviewed removal token instead of running on every details request.
+    if saving && c["git"] == true {
+        info["commits"]["off_head"] = json!(off_head_commits(c, info["commits"]["head"].as_str())
+            .context("Cannot count commits outside the checked-out branch")?);
+    }
     Ok(info)
 }
 
@@ -368,23 +430,27 @@ pub fn dispatch(db: &Path, home: &Path, req: Request) -> Result<Value> {
         },
         "apply" => {
             let current = preview(executable, &c)?;
+            ensure!(current["details"]["error"].is_null(), "Cannot safely validate Git history; fix the Git error before applying");
             ensure!(req.expected.as_deref() == current["token"].as_str(), "Preview changed; cancel and preview again");
             ovnfs(executable, &["apply", name, "--json"], true)
         },
         "save-before-remove" => {
-            let info = removal_details(executable, &req, &c)?;
+            let info = removal_details(executable, &req, &c, true)?;
             ensure!(info["commits"]["head"].is_string(),
                 "The checked-out branch has no commits yet. Switch the workspace to a retained branch containing these commits, then use Save branch.");
+            ensure!(info["commits"]["off_head"] == 0,
+                "Some unreturned commits are not reachable from the checked-out HEAD. Bring those branches or refs back to the source repository first; saving HEAD as one branch cannot preserve them.");
             save_branch(executable, &c, req.branch.as_deref().context("new branch required")?)?;
             let current = checkout(executable, &req)?;
             let after = details(executable, &current)?;
-            ensure!(after["error"].is_null() && info["changes"] == after["changes"] && info["commits"] == after["commits"],
-                "Workspace changed while saving the branch; review removal again. The branch was saved.");
+            ensure!(after["error"].is_null() && info["changes"] == after["changes"]
+                && info["commits"]["head"] == after["commits"]["head"] && after["commits"]["count"] == 0,
+                "Workspace changed or commits could not be confirmed in the source; review removal again. The branch was saved.");
             // The frontend must obtain another fresh agent authorization before requesting remove.
             Ok(json!({"token":after["token"]}))
         },
         "remove" => {
-            removal_details(executable, &req, &c)?;
+            removal_details(executable, &req, &c, false)?;
             ovnfs(executable, &["rm", name, "--json"], false)
         },
         "branch" => save_branch(executable, &c, req.branch.as_deref().context("new branch required")?),
@@ -395,6 +461,157 @@ pub fn dispatch(db: &Path, home: &Path, req: Request) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture_git(path: &Path, args: &[&str]) -> String {
+        let out = command("git", &["-C", path.to_str().unwrap(),
+            "-c", "user.name=Workspace Test", "-c", "user.email=ws-test@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+            .args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+    fn fixture_git_stdin(path: &Path, args: &[&str], input: &str) {
+        let mut child = command("git", &["-C", path.to_str().unwrap()]).args(args)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        // Writing concurrently keeps a large stream from filling the pipe buffer.
+        let out = std::thread::scope(|scope| {
+            let writer = scope.spawn(move || stdin.write_all(input.as_bytes()));
+            let out = child.wait_with_output().unwrap();
+            writer.join().unwrap().unwrap();
+            out
+        });
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    fn git_fixture() -> (tempfile::TempDir, Value) {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let checkout = temp.path().join("checkout");
+        for path in [&source, &checkout] {
+            std::fs::create_dir(path).unwrap();
+            fixture_git(path, &["init", "--initial-branch=main"]);
+        }
+        fixture_git(&source, &["commit", "--allow-empty", "-m", "source base"]);
+        fixture_git(&checkout, &["fetch", source.to_str().unwrap(), "main"]);
+        fixture_git(&checkout, &["reset", "--hard", "FETCH_HEAD"]);
+        (temp, json!({"source":source, "path":checkout, "git":true}))
+    }
+    #[test]
+    fn replacement_refs_do_not_hide_unreturned_ancestors() {
+        let (_temp, c) = git_fixture();
+        let checkout = Path::new(c["path"].as_str().unwrap());
+        fixture_git(checkout, &["commit", "--allow-empty", "-m", "private parent"]);
+        fixture_git(checkout, &["commit", "--allow-empty", "-m", "private head"]);
+        fixture_git(checkout, &["replace", "--graft", "HEAD"]);
+        // Count the original ancestry and the replacement ref's own commit, not a rewritten graph.
+        assert_eq!(commits(&c).unwrap()["count"], 3);
+    }
+    #[test]
+    fn commits_count_non_head_branches_and_limit_titles() {
+        let (_temp, c) = git_fixture();
+        let checkout = Path::new(c["path"].as_str().unwrap());
+        fixture_git(checkout, &["switch", "-c", "private"]);
+        for i in 0..30 {
+            fixture_git(checkout, &["commit", "--allow-empty", "-m", &format!("private {i}")]);
+        }
+        fixture_git(checkout, &["switch", "main"]);
+        let info = commits(&c).unwrap();
+        assert_eq!(info["count"], 30);
+        assert_eq!(off_head_commits(&c, info["head"].as_str()).unwrap(), 30);
+        let titles = info["titles"].as_array().unwrap();
+        assert_eq!(titles.len(), 25);
+        assert!(titles.iter().all(|title| title.as_str().unwrap().contains("private ")));
+        assert!(titles.iter().any(|title| title.as_str().unwrap().ends_with("private 29")));
+    }
+    #[test]
+    fn commits_include_detached_head_tags_and_other_ref_namespaces() {
+        let (_temp, c) = git_fixture();
+        let checkout = Path::new(c["path"].as_str().unwrap());
+        for (title, reference) in [("tag-only", "refs/tags/retained"), ("remote-only", "refs/remotes/origin/retained"),
+            ("stash-only", "refs/stash"), ("other-only", "refs/retained/commit")] {
+            fixture_git(checkout, &["switch", "-C", "scratch", "main"]);
+            fixture_git(checkout, &["commit", "--allow-empty", "-m", title]);
+            fixture_git(checkout, &["update-ref", reference, "HEAD"]);
+        }
+        fixture_git(checkout, &["switch", "--detach", "main"]);
+        fixture_git(checkout, &["branch", "-D", "scratch"]);
+        fixture_git(checkout, &["commit", "--allow-empty", "-m", "detached HEAD"]);
+        let info = commits(&c).unwrap();
+        assert_eq!(info["count"], 5);
+        assert_eq!(off_head_commits(&c, info["head"].as_str()).unwrap(), 4);
+        assert_eq!(info["titles"].as_array().unwrap().len(), 5);
+    }
+    #[test]
+    fn commits_exclude_all_source_refs_and_detached_source_head() {
+        let (_temp, c) = git_fixture();
+        let source = Path::new(c["source"].as_str().unwrap());
+        let checkout = Path::new(c["path"].as_str().unwrap());
+        for (branch, reference) in [("returned-branch", "refs/heads/returned"), ("returned-tag", "refs/tags/returned"),
+            ("returned-remote", "refs/remotes/origin/returned"), ("returned-other", "refs/retained/returned"),
+            ("returned-head", "refs/heads/detached")] {
+            fixture_git(checkout, &["switch", "-c", branch, "main"]);
+            fixture_git(checkout, &["commit", "--allow-empty", "-m", branch]);
+            fixture_git(source, &["fetch", checkout.to_str().unwrap(), &format!("HEAD:{reference}")]);
+        }
+        // The annotated tag object itself need not exist in the checkout: its commit does.
+        fixture_git(source, &["tag", "--annotate", "--force", "--message=returned", "returned", "refs/tags/returned"]);
+        fixture_git(source, &["switch", "--detach", "detached"]);
+        fixture_git(source, &["branch", "-D", "detached"]);
+        fixture_git(checkout, &["switch", "main"]);
+        let info = commits(&c).unwrap();
+        assert_eq!(info["count"], 0);
+        assert_eq!(off_head_commits(&c, info["head"].as_str()).unwrap(), 0);
+        assert!(info["titles"].as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn missing_source_tips_only_overcount_checkout_history() {
+        let (_temp, c) = git_fixture();
+        let source = Path::new(c["source"].as_str().unwrap());
+        let checkout = Path::new(c["path"].as_str().unwrap());
+        fixture_git(checkout, &["commit", "--allow-empty", "-m", "private"]);
+        fixture_git(source, &["commit", "--allow-empty", "-m", "source advanced"]);
+        fixture_git(source, &["switch", "-c", "source-only"]);
+        fixture_git(source, &["commit", "--allow-empty", "-m", "source-only tip"]);
+        // Neither source tip is in the checkout yet, so even the shared base is warned about.
+        assert_eq!(commits(&c).unwrap()["count"], 2);
+        fixture_git(checkout, &["fetch", source.to_str().unwrap(), "main"]);
+        // FETCH_HEAD is not a retained ref, but the available source tip can exclude its base.
+        assert_eq!(commits(&c).unwrap()["count"], 1);
+    }
+    #[test]
+    fn commits_reject_unreadable_non_head_source_refs() {
+        let (_temp, c) = git_fixture();
+        let source = Path::new(c["source"].as_str().unwrap());
+        for reference in ["1111111111111111111111111111111111111111\n", "not a valid object\n"] {
+            std::fs::write(source.join(".git/refs/heads/broken"), reference).unwrap();
+            assert!(commits(&c).is_err());
+        }
+    }
+    #[test]
+    fn many_source_tips_exceed_the_command_line_but_still_exclude() {
+        let (_temp, c) = git_fixture();
+        let source = Path::new(c["source"].as_str().unwrap());
+        let checkout = Path::new(c["path"].as_str().unwrap());
+        // 1,200 tags on distinct commits: as argv their negated tips would be about 48 KB,
+        // well past the 32,767-character Windows command line, yet every count stays exact.
+        let mut stream = String::new();
+        for i in 1..=1200 {
+            stream.push_str(&format!("commit refs/heads/bulk\nmark :{i}\ncommitter Workspace Test \
+                <ws-test@example.invalid> 1700000000 +0000\ndata 1\nc\nreset refs/tags/t{i}\nfrom :{i}\n"));
+        }
+        fixture_git_stdin(source, &["fast-import", "--quiet"], &stream);
+        fixture_git(checkout, &["fetch", "--force", source.to_str().unwrap(), "refs/tags/*:refs/tags/*"]);
+        fixture_git(checkout, &["commit", "--allow-empty", "-m", "private parent"]);
+        fixture_git(checkout, &["commit", "--allow-empty", "-m", "private head"]);
+        let exclusions = source_exclusions(source.to_str().unwrap(), checkout.to_str().unwrap()).unwrap();
+        assert!(exclusions.iter().map(|tip| tip.len() + 1).sum::<usize>() > 32_767);
+        let info = commits(&c).unwrap();
+        assert_eq!(info["count"], 2);
+        assert_eq!(info["titles"].as_array().unwrap().len(), 2);
+        assert!(info["titles"][0].as_str().unwrap().ends_with("private head"));
+        // Both unreturned commits are on HEAD, and the 1,200 excluded tips never leak in.
+        assert_eq!(off_head_commits(&c, info["head"].as_str()).unwrap(), 0);
+    }
     #[test]
     fn names_are_bounded_and_not_options() {
         for n in ["hello", "a._-9", "0"] { assert!(validate_name(n).is_ok()); }

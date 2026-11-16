@@ -360,6 +360,27 @@ local preview = all_nodes({workspaces.layer(s)})
 for _, label in {"Applied + merged", "Conflict markers", "Left untouched"} do
     check(has_text(preview, label), "apply preview group labels are English-only")
 end
+check(not s.workspaces.dialog.buttons[2].disabled, "Apply remains enabled when Git history is readable")
+workspace_action(s, "cancel")
+workspace_action(s, "preview", "other")
+for _, job in pending do if job.payload and job.payload.op == "workspaces" and job.payload.request.action == "preview" then
+    local cb = job.cb
+    job.cb = function(data, err)
+        data.error = "Cannot count commits: fixture Git history unavailable"
+        data.details.error = data.error
+        cb(data, err)
+    end
+end end
+flush()
+preview = all_nodes({workspaces.layer(s)})
+check(has_text(preview, "Cannot count commits: fixture Git history unavailable"), "the Apply preview surfaces its Git history error")
+local disabled_apply = nil
+for _, n in preview do if n.kind == "button" and n.props.key == "apply" then disabled_apply = n end end
+check(disabled_apply and disabled_apply.props.attrs["aria-disabled"] == "true" and disabled_apply.props.actions == nil, "Apply to source is rendered disabled without a click action on Git error")
+local before_disabled_apply = #calls
+s.workspaces.dialog.focus = 2
+workspaces.key(s, {name = "enter"})
+check(#calls == before_disabled_apply and not s.workspaces.busy, "Enter cannot activate Apply when Git history is unreadable")
 workspace_action(s, "cancel")
 -- A routine panel timer/library reload retains both drafts and confirmations.
 workspace_action(s, "branch", "other")

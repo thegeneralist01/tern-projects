@@ -5,7 +5,7 @@ All notable changes to `tern-projects` will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Optional OVNFS Workspaces**: a hidden-when-uninstalled tab for creating and forking checkouts, native Tern agent status, source-change and commit inspection, guarded apply previews and removal, branch preservation, and adding unassigned workspaces as projects. New chat follows the normal default-harness/picker flow in the checkout. Discovery includes official installer locations; Refresh picks up installation or removal without reopening. Workspace UI verified on Linux only; macOS and Windows have not been tested interactively.
+- **Optional OVNFS Workspaces**: a hidden-when-uninstalled tab for creating and forking checkouts, native Tern agent status, source-change and commit inspection, guarded apply previews and removal, branch preservation, and adding unassigned workspaces as projects. Commit warnings cover all checkout refs; save-before-remove requires all unreturned commits to be reachable from HEAD. Apply is disabled when Git history is unreadable. New chat follows the normal default-harness/picker flow in the checkout. Discovery includes official installer locations; Refresh picks up installation or removal without reopening. Workspace UI verified on Linux only; macOS and Windows have not been tested interactively.
 
 ## [0.2.15] — 2026-11-14
 

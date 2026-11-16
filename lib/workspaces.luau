@@ -376,7 +376,8 @@ local function show(s: any, checkout: any, kind: string)
 			local body = result_body(data)
 			table.insert(body, c.note("This preview does not write files. Applying writes clean changes and conflict markers into the target folder."))
 			if data.details.commits and type(data.details.commits) == "table" and data.details.commits.count > 0 then table.insert(body, c.note(tostring(data.details.commits.count) .. " commits are not carried by Apply. Save them as a new branch separately.", "warning")) end
-			dialog(w, "apply", "Preview apply: " .. checkout.name, body, {{id = "cancel", label = "Cancel"}, {id = "apply", label = "Apply to source", variant = "primary"}}, {checkout = checkout, info = data})
+			if type(data.error) == "string" then table.insert(body, c.banner("git-error", "error", "warn", data.error)) end
+			dialog(w, "apply", "Preview apply: " .. checkout.name, body, {{id = "cancel", label = "Cancel"}, {id = "apply", label = "Apply to source", variant = "primary", disabled = type(data.error) == "string"}}, {checkout = checkout, info = data})
 		elseif kind == "remove" then
 			local body = {c.note("Remove " .. checkout.path .. "? The source folder is not deleted."), c.note("Ignored files, caches (including node_modules), and files over 100 MB are NOT counted in source changes. They are deleted too. Unreturned commits are lost unless saved as a branch.", "warning")}
 			append(body, info_body(data))

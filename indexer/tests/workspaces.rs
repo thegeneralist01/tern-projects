@@ -29,6 +29,9 @@ case "$1" in
  diff) echo '{"changes":[{"path":"a.txt","status":"M"}]}' ;;
  apply)
   if test "$3" = '--dry-run'; then echo '{"source":"/source","applied":[{"path":"a.txt","status":"M"}],"merged":[],"conflicts":[{"path":"b.txt","markers":true}]}'; exit 1; fi
+  if test "$3" = '--branch'; then
+   /usr/bin/git -C "$WS_FIXTURE/source" fetch --no-tags "$WS_FIXTURE/checkout" "HEAD:refs/heads/$4" >&2 || exit 2
+  fi
   touch "$WS_FIXTURE/applying"; sleep 0.3; echo '{"source":"/source","applied":[],"merged":[],"conflicts":[]}' ;;
  *) echo '{}' ;;
 esac
@@ -140,6 +143,9 @@ fn repository_selection_environment_is_removed_from_git_and_ovnfs() {
         ("GIT_CEILING_DIRECTORIES", "/"), ("GIT_DISCOVERY_ACROSS_FILESYSTEM", "0"), ("GIT_PREFIX", "/wrong"),
         ("GIT_IMPLICIT_WORK_TREE", "0"), ("GIT_GRAFT_FILE", "/wrong"),
         ("GIT_INTERNAL_SUPER_PREFIX", "/wrong"), ("GIT_QUARANTINE_PATH", "/wrong"),
+        // Tracing would write to stderr, which this module treats as a Git failure.
+        ("GIT_TRACE", "1"), ("GIT_TRACE2", "1"), ("GIT_TRACE2_EVENT", "1"),
+        ("GIT_TRACE2_PERF", "1"), ("GIT_CURL_VERBOSE", "1"),
         ("GIT_CONFIG", "/wrong"), ("GIT_CONFIG_PARAMETERS", "'core.worktree'='/wrong'"),
         ("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "core.worktree"), ("GIT_CONFIG_VALUE_0", "/wrong"),
     ];
@@ -219,6 +225,7 @@ fn unborn_source_counts_checkout_commits_but_corrupt_head_blocks_removal() {
     // Saving is deliberately a separate stage: it must never remove without another authorization.
     let saved = value(call(t.path(), json!({"action":"save-before-remove","name":"parent","identity":c["identity"],"expected":committed["token"],"branch":"saved"})));
     assert!(saved["token"].is_string());
+    assert_eq!(info()["commits"]["count"], 0, "the saved source branch must exclude every preserved commit");
     assert!(!fs::read_to_string(t.path().join("calls")).unwrap().contains("rm "));
     assert!(!call(t.path(), json!({"action":"authorize","name":"parent","identity":c["identity"],"removing":true,
         "agents":[{"cwd":checkout,"state":"working","live":true}]})).status.success());
@@ -269,6 +276,106 @@ fn unborn_checkout_counts_other_refs_and_blocks_unreadable_history() {
     let removal = call(t.path(), json!({"action":"remove","name":"parent","identity":c["identity"],"expected":broken["token"]}));
     assert!(!removal.status.success());
     assert!(String::from_utf8_lossy(&removal.stderr).contains("Cannot safely check"));
+    assert!(!fs::read_to_string(t.path().join("calls")).unwrap().contains("rm "));
+}
+#[test]
+fn save_before_remove_rejects_commits_on_another_branch() {
+    let t = fixture();
+    let source = t.path().join("source");
+    let checkout = t.path().join("checkout");
+    init_repo(&source);
+    git(&source, &["commit", "--allow-empty", "-m", "source base"]);
+    init_repo(&checkout);
+    git(&checkout, &["fetch", source.to_str().unwrap(), "main"]);
+    git(&checkout, &["reset", "--hard", "FETCH_HEAD"]);
+    git(&checkout, &["switch", "-c", "private"]);
+    git(&checkout, &["commit", "--allow-empty", "-m", "off HEAD"]);
+    git(&checkout, &["switch", "main"]);
+    let c = set_checkout(t.path(), &source, &checkout, true);
+    let info = value(call(t.path(), json!({"action":"details","name":"parent","identity":c["identity"]})));
+    assert_eq!(info["commits"]["count"], 1);
+    // The off-HEAD walk belongs to removal authorization, not to every details request.
+    assert!(info["commits"]["off_head"].is_null(), "{info}");
+    let save = call(t.path(), json!({"action":"save-before-remove","name":"parent","identity":c["identity"],
+        "expected":info["token"],"branch":"saved"}));
+    assert!(!save.status.success());
+    assert!(String::from_utf8_lossy(&save.stderr).contains("Bring those branches or refs back to the source"));
+    assert!(!fs::read_to_string(t.path().join("calls")).unwrap().contains("apply parent --branch"));
+    assert!(!t.path().join("applying").exists());
+    // Explicit Remove still accepts the complete, reviewed warning token.
+    value(call(t.path(), json!({"action":"remove","name":"parent","identity":c["identity"],"expected":info["token"]})));
+    assert!(fs::read_to_string(t.path().join("calls")).unwrap().contains("rm parent --json"));
+}
+#[test]
+fn preview_surfaces_history_errors_and_apply_refuses_them() {
+    let t = fixture();
+    let source = t.path().join("source");
+    let checkout = t.path().join("checkout");
+    init_repo(&source);
+    git(&source, &["commit", "--allow-empty", "-m", "source base"]);
+    init_repo(&checkout);
+    git(&checkout, &["fetch", source.to_str().unwrap(), "main"]);
+    git(&checkout, &["reset", "--hard", "FETCH_HEAD"]);
+    let c = set_checkout(t.path(), &source, &checkout, true);
+    let preview = || value(call(t.path(), json!({"action":"preview","name":"parent","identity":c["identity"]})));
+    let valid = preview();
+    assert!(valid["error"].is_null());
+    // Even a malformed non-HEAD ref (which Git can warn about and ignore) is unsafe.
+    fs::write(checkout.join(".git/refs/heads/broken"), "not a valid object\n").unwrap();
+    let broken = preview();
+    assert!(broken["error"].as_str().unwrap().contains("Cannot count commits"));
+    assert_eq!(broken["error"], broken["details"]["error"]);
+    for expected in [&valid["token"], &broken["token"]] {
+        let apply = call(t.path(), json!({"action":"apply","name":"parent","identity":c["identity"],"expected":expected}));
+        assert!(!apply.status.success());
+        assert!(String::from_utf8_lossy(&apply.stderr).contains("Cannot safely validate Git history"));
+    }
+    assert!(!t.path().join("applying").exists());
+    assert!(!fs::read_to_string(t.path().join("calls")).unwrap().lines().any(|line| line == "apply parent --json"));
+}
+#[test]
+fn apply_refuses_missing_git_with_a_matching_preview_token() {
+    let t = fixture();
+    let source = t.path().join("source");
+    let checkout = t.path().join("checkout");
+    init_repo(&source);
+    init_repo(&checkout);
+    let c = set_checkout(t.path(), &source, &checkout, true);
+    // Leave only the fixture and cat on PATH, so Git really cannot be spawned.
+    std::os::unix::fs::symlink("/bin/cat", t.path().join("cat")).unwrap();
+    let invoke = |request| command_env(t.path(), request, &[("PATH", t.path().to_str().unwrap())]).wait_with_output().unwrap();
+    let preview = value(invoke(json!({"action":"preview","name":"parent","identity":c["identity"]})));
+    assert!(preview["error"].as_str().unwrap().contains("cannot run git"));
+    let apply = invoke(json!({"action":"apply","name":"parent","identity":c["identity"],"expected":preview["token"]}));
+    assert!(!apply.status.success());
+    assert!(String::from_utf8_lossy(&apply.stderr).contains("Cannot safely validate Git history"));
+    assert!(!fs::read_to_string(t.path().join("calls")).unwrap().lines().any(|line| line == "apply parent --json"));
+}
+#[test]
+fn corrupt_source_tip_objects_in_checkout_are_not_treated_as_missing() {
+    let t = fixture();
+    let source = t.path().join("source");
+    let checkout = t.path().join("checkout");
+    init_repo(&source);
+    git(&source, &["commit", "--allow-empty", "-m", "source base"]);
+    init_repo(&checkout);
+    git(&checkout, &["fetch", source.to_str().unwrap(), "main"]);
+    git(&checkout, &["reset", "--hard", "FETCH_HEAD"]);
+    git(&source, &["commit", "--allow-empty", "-m", "source advanced"]);
+    git(&checkout, &["-c", "fetch.unpackLimit=1000000", "fetch", source.to_str().unwrap(), "main"]);
+    let tip = Command::new("/usr/bin/git").arg("-C").arg(&source).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert!(tip.status.success());
+    let tip = String::from_utf8(tip.stdout).unwrap();
+    let tip = tip.trim();
+    let object = checkout.join(".git/objects").join(&tip[..2]).join(&tip[2..]);
+    fs::set_permissions(&object, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(object, "corrupt object\n").unwrap();
+    let c = set_checkout(t.path(), &source, &checkout, true);
+    let info = value(call(t.path(), json!({"action":"details","name":"parent","identity":c["identity"]})));
+    assert!(info["error"].is_string(), "{info}");
+    let remove = call(t.path(), json!({"action":"remove","name":"parent","identity":c["identity"],"expected":info["token"]}));
+    assert!(!remove.status.success());
+    assert!(String::from_utf8_lossy(&remove.stderr).contains("Cannot safely check"));
     assert!(!fs::read_to_string(t.path().join("calls")).unwrap().contains("rm "));
 }
 #[test]
