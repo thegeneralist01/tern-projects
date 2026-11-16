@@ -497,7 +497,7 @@ fn stable_snapshot<T>(path: &Path, mut read: impl FnMut(u64) -> Result<T>) -> Re
     unreachable!("the retry above either returns or fails")
 }
 
-/// The entries from the file's last entry back to the root.
+/// The entries from `tip` back to the root.
 fn active_branch(parents: &HashMap<String, Option<String>>, tip: &str) -> HashSet<String> {
     let mut ids = HashSet::new();
     let mut at = Some(tip);
@@ -510,8 +510,8 @@ fn active_branch(parents: &HashMap<String, Option<String>>, tip: &str) -> HashSe
     ids
 }
 
-/// OMP sessions are trees: `/tree` and rewinds leave abandoned entries in the file, so only the
-/// branch that ends at the last chat message is the conversation. Two streaming passes over one
+/// OMP sessions are trees: `/tree`, rewinds and branch summaries leave abandoned entries in the
+/// file, so only the branch OMP resumes on is the conversation. Two streaming passes over one
 /// snapshot keep one small id map instead of every parsed entry.
 fn read_omp(path: &Path) -> Result<Preview> {
     stable_snapshot(path, |len| omp_snapshot(path, len))
@@ -521,7 +521,11 @@ fn read_omp(path: &Path) -> Result<Preview> {
 /// second, both over the same `limit` bytes.
 fn omp_snapshot(path: &Path, limit: u64) -> Result<Preview> {
     let mut parents: HashMap<String, Option<String>> = HashMap::new();
-    let mut tip: Option<String> = None;
+    // As OMP's loader replays the file: every tree entry moves the leaf to itself unless it was
+    // written off the active branch (late usage, results routed back), whose `activeLeafId`
+    // names the branch the session stayed on; `null` clears it. `None` until a tree entry.
+    let mut leaf: Option<Option<String>> = None;
+    let mut last_self_selected: Option<String> = None;
     let mut linked = false;
     let mut overflow = false;
     each_line(path, limit, |line| {
@@ -529,17 +533,23 @@ fn omp_snapshot(path: &Path, limit: u64) -> Result<Preview> {
         let Some(id) = value.get("id").and_then(Value::as_str) else { return Ok(()) };
         let is_message = value.get("type").and_then(Value::as_str) == Some("message");
         let parent = value.get("parentId");
-        // Only chat messages name the live branch: bookkeeping records (model usage, title
-        // changes) are appended after them, and one on an older branch must not become the tip.
         if is_message {
             linked = linked || parent.is_some();
-            if parent.is_some() || tip.is_none() {
-                tip = Some(id.to_owned());
-            }
         }
-        // Metadata records (the session header, title changes) carry ids but not the tree.
+        // The session header and records older OMP builds wrote without `parentId` are not tree
+        // entries and never move the leaf.
         if parent.is_none() && !is_message {
             return Ok(());
+        }
+        if parent.is_some() {
+            leaf = Some(match value.get("activeLeafId") {
+                Some(Value::Null) => None,
+                Some(Value::String(active)) if active != id => Some(active.clone()),
+                _ => {
+                    last_self_selected = Some(id.to_owned());
+                    Some(id.to_owned())
+                }
+            });
         }
         if parents.len() >= MAX_TREE_ENTRIES {
             overflow = true;
@@ -549,8 +559,17 @@ fn omp_snapshot(path: &Path, limit: u64) -> Result<Preview> {
         Ok(())
     })?;
     // Sessions without parent links, or too long to map, render as written rather than as one branch.
-    let branch = match tip {
-        Some(tip) if linked && !overflow => Some(active_branch(&parents, &tip)),
+    let branch = match leaf {
+        Some(leaf) if linked && !overflow => {
+            // A captured leaf rolled back or rewritten away falls back to the newest entry that
+            // selected itself; a cleared leaf has no conversation.
+            let tip = match leaf {
+                Some(id) if parents.contains_key(&id) => Some(id),
+                Some(_) => last_self_selected,
+                None => None,
+            };
+            Some(tip.map_or_else(HashSet::new, |tip| active_branch(&parents, &tip)))
+        }
         _ => None,
     };
     let mut out = Builder::new();
@@ -833,19 +852,63 @@ mod tests {
     }
 
     #[test]
-    fn omp_bookkeeping_entries_never_pick_the_branch() {
+    fn omp_off_branch_records_keep_the_active_leaf() {
         let jsonl = [
             r#"{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"root"}]}}"#,
-            r#"{"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"abandoned"}]}}"#,
-            r#"{"type":"message","id":"b","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"live"}]}}"#,
-            // Bookkeeping on the older branch is written last; it is not a chat message.
-            r#"{"type":"model_usage","id":"u1","parentId":"c","tokens":42}"#,
+            r#"{"type":"message","id":"b","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"left behind"}]}}"#,
+            r#"{"type":"branch_summary","id":"s","parentId":"a","fromId":"b","summary":""}"#,
+            // The abandoned turn's late usage lands last, on its own branch, naming the leaf the
+            // session stayed on.
+            r#"{"type":"model_usage","id":"u1","parentId":"b","activeLeafId":"s","tokens":42}"#,
         ];
         let preview = claude_omp(&jsonl);
-        assert_eq!(rendered(&preview), vec![
-            (Role::User, "root".to_owned()),
-            (Role::Assistant, "live".to_owned()),
+        assert_eq!(rendered(&preview), vec![(Role::User, "root".to_owned())]);
+    }
+
+    #[test]
+    fn omp_branch_summary_selects_the_branch_it_returns_to() {
+        let mut jsonl = vec![
+            r#"{"type":"session","version":3,"id":"s1","cwd":"/project","timestamp":"2026-11-14T10:00:00Z"}"#,
+            r#"{"type":"message","id":"q","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"How should I travel?"}]}}"#,
+            r#"{"type":"message","id":"train","parentId":"q","message":{"role":"assistant","content":[{"type":"text","text":"Take the train."}]}}"#,
+            r#"{"type":"message","id":"bus","parentId":"q","message":{"role":"assistant","content":[{"type":"text","text":"Take the bus."}]}}"#,
+        ];
+        let answer = |preview: &Preview| rendered(preview).last().map(|(_, text)| text.clone());
+        assert_eq!(answer(&claude_omp(&jsonl)).as_deref(), Some("Take the bus."));
+        // Returning to the train answer with a summary is OMP's `branch_summary` from the bus answer.
+        jsonl.push(r#"{"type":"branch_summary","id":"back","parentId":"train","fromId":"bus","summary":"Compared the bus."}"#);
+        assert_eq!(rendered(&claude_omp(&jsonl)), vec![
+            (Role::User, "How should I travel?".to_owned()),
+            (Role::Assistant, "Take the train.".to_owned()),
         ]);
+        // Any later record on that branch keeps it, as OMP resumes from the last record.
+        jsonl.push(r#"{"type":"model_change","id":"m","parentId":"back","model":"other"}"#);
+        assert_eq!(answer(&claude_omp(&jsonl)).as_deref(), Some("Take the train."));
+    }
+
+    #[test]
+    fn omp_cleared_and_dangling_leaves_follow_omp() {
+        let base = [
+            r#"{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"root"}]}}"#,
+            r#"{"type":"message","id":"b","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"kept"}]}}"#,
+            r#"{"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"newest"}]}}"#,
+        ];
+        let with = |last: &'static str| {
+            let mut lines = base.to_vec();
+            lines.push(last);
+            rendered(&claude_omp(&lines))
+        };
+        // A captured leaf that was rewritten away falls back to the newest self-selecting entry,
+        // here a model change on the older branch rather than the newest message.
+        let mut lines = base.to_vec();
+        lines.push(r#"{"type":"model_change","id":"m","parentId":"b","model":"other"}"#);
+        lines.push(r#"{"type":"model_usage","id":"u","parentId":"c","activeLeafId":"gone"}"#);
+        assert_eq!(rendered(&claude_omp(&lines)), vec![
+            (Role::User, "root".to_owned()),
+            (Role::Assistant, "kept".to_owned()),
+        ]);
+        // A record that cleared the leaf leaves no conversation selected.
+        assert!(with(r#"{"type":"model_usage","id":"u","parentId":"b","activeLeafId":null}"#).is_empty());
     }
 
     #[test]
