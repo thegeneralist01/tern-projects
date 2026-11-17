@@ -35,6 +35,23 @@
 	&.sf-dock { padding: 2px 8px 8px; }
 
 	.tp-grow { flex: 1 1 auto; min-width: 0; }
+	.tp-ws-menu { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+	.tp-ws-menu .tp-btn { justify-content: flex-start; }
+	.tp-ws-form { max-height: 58vh; overflow-y: auto; padding-right: 14px; }
+	.tp-ws-source { display: flex; flex-direction: column; gap: 6px; padding: 14px 8px 3px; }
+	[data-role="tern-projects.rows"] .sf-item[data-role="tern-projects.workspace-row"] {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		column-gap: 8px;
+		row-gap: 3px;
+		min-height: 46px;
+		padding-top: 5px;
+		padding-bottom: 5px;
+	}
+	[data-role="tern-projects.rows"] .sf-item[data-role="tern-projects.workspace-row"] .sf-item-ic { grid-column: 1; grid-row: 1; }
+	[data-role="tern-projects.rows"] .sf-item[data-role="tern-projects.workspace-row"] .sf-item-label { grid-column: 2; grid-row: 1; }
+	[data-role="tern-projects.rows"] .sf-item[data-role="tern-projects.workspace-row"] .sf-item-detail { grid-column: 2; grid-row: 2; font-size: 11px; white-space: normal; }
+	[data-role="tern-projects.workspace-path"] { font: 12px var(--mono); overflow-wrap: anywhere; }
 	.tp-row { display: flex; align-items: center; gap: 6px; }
 
 	/* Text fields: one look for search, names and paths. */
