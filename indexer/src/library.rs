@@ -76,6 +76,9 @@ pub enum Request {
     Transcript {
         uid: String,
     },
+    Workspaces {
+        request: crate::workspaces::Request,
+    },
 }
 
 // Option<Value> cannot distinguish an absent field from an explicit JSON null.

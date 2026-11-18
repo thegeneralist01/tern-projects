@@ -235,7 +235,7 @@ action(retargeted, "refresh"); flush()
 check(table.find(opened, "tern-projects://follow?") ~= nil, "Refresh asks the window for the followed folder")
 print("Recents scope: " .. tostring(assertions) .. " assertions passed (no model or network)")
 '''
-    names = ("textfield", "fmt", "input", "ui", "project-editor", "picker", "resume", "chat-launch", "panel")
+    names = ("textfield", "fmt", "input", "ui", "project-editor", "picker", "resume", "chat-launch", "workspaces", "panel")
     modules = []
     for name in names:
         path = root / ("blocks/panel.luau" if name == "panel" else f"lib/{name}.luau")

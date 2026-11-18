@@ -17,7 +17,7 @@ def main() -> int:
     if runtime is None:
         parser.error(f"Luau runtime not found: {args.runtime}")
     root = Path(__file__).resolve().parent.parent
-    modules = ("lib/resume", "lib/chat-launch", "blocks/panel", "window")
+    modules = ("lib/resume", "lib/chat-launch", "lib/workspaces", "lib/workspace-agents", "blocks/panel", "window")
     sources = "local sources = {\n" + "".join(
         f"[{json.dumps(name)}] = {json.dumps((root / (name + '.luau')).read_text(encoding='utf-8'), ensure_ascii=False)},\n"
         for name in modules
