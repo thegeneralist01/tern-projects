@@ -73,6 +73,9 @@ pub enum Request {
         path: String,
     },
     SourceIgnores,
+    Transcript {
+        uid: String,
+    },
     Workspaces {
         request: crate::workspaces::Request,
     },

@@ -17,6 +17,7 @@ mod library;
 mod sessions;
 mod harnesses;
 mod delete;
+mod transcript;
 mod workspaces;
 
 use adapters::Adapter;
@@ -335,6 +336,7 @@ fn run_library(db_path: &Path, home: &Path) -> Result<serde_json::Value> {
         Request::SourceIgnore { path, cwd } => library::Library::open(db_path)?.ignore_source(&path, &cwd, home),
         Request::SourceUnignore { path } => library::Library::open(db_path)?.unignore_source(&path),
         Request::SourceIgnores => Ok(json!({"ignored_sources": library::Library::open(db_path)?.ignored_sources()?})),
+        Request::Transcript { uid } => transcript::preview(db_path, home, &uid),
         Request::Workspaces { request } => workspaces::dispatch(db_path, home, request),
     }
 }
